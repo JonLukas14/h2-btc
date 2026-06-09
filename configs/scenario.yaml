@@ -1,0 +1,58 @@
+scenario_name: base_case
+
+system:
+  snapshots: 8760
+  year: 2045
+
+demand:
+  electricity_mw: 100
+  hydrogen_mw: 20
+  use_hourly_electricity_profile: true
+  use_hourly_hydrogen_profile: false
+
+costs:
+  year: 2030
+  discount_rate: 0.07    # 7% — standard assumption for energy models
+
+data_files:
+  costs: data/costs_2030.csv
+  solar_cf: data/kz_solar_cf.csv
+  wind_cf: data/kz_wind_cf.csv
+  electricity_demand: data/kz_electricity_demand.csv
+  hydrogen_demand: data/kz_hydrogen_demand.csv
+
+technology:
+  solar_capital_cost: null
+  wind_capital_cost: null
+  electrolyzer_capital_cost: null
+  hydrogen_storage_capital_cost: null
+  load_shedding_marginal_cost: 5000
+
+hydrogen:
+  electrolyzer_efficiency: 0.7
+  cyclic_storage: true
+
+mining:
+  enabled: true
+  max_capacity_mw: 200        # maximum installed mining capacity
+  min_utilization: 0.0        # fraction that must always run (0 = fully flexible)
+  electricity_per_btc: 0.00021  # MWh per USD of mining revenue proxy
+  marginal_cost: -50          # EUR/MWh — negative = benefit, optimizer wants to use this
+  curtailment_penalty: 0      # EUR/MWh for being forced to curtail mining
+  notes: >
+    Bitcoin mining modelled as a flexible electricity sink.
+    Negative marginal cost represents mining revenue minus opex.
+    max_capacity_mw sets the physical upper bound on mining load.
+    min_utilization=0 means fully interruptible.
+
+  # --- Base: electricity + hydrogen only --- 
+# scenario.yaml                  → mining.enabled: false
+
+  # ---  Mining only: no hydrogen production target --- 
+#scenario_mining_only.yaml      → hydrogen_mw: 0, mining.enabled: true
+
+  # --- High mining: large mining fleet, small H₂ demand ---- 
+#scenario_mining_high.yaml      → mining.max_capacity_mw: 400, hydrogen_mw: 20
+
+  # --- Balanced: moderate mining + full H₂ --- 
+#scenario_balanced.yaml         → mining.max_capacity_mw: 200, hydrogen_mw: 50

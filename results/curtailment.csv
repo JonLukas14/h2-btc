@@ -1,0 +1,3 @@
+asset,available_mwh,actual_mwh,curtailed_mwh,curtailment_rate
+solar,159082546.8307393,40519280.375105515,0.0,0.0
+wind,407056607.6607941,55195718.50528574,0.0,0.0
