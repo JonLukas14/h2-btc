@@ -2,10 +2,12 @@ import pypsa
 import pandas as pd
 from pathlib import Path
 
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 KZ_REPO = BASE_DIR / "pypsa-kz-data"
 TECH_REPO = BASE_DIR / "technology-data"
+
 
 def load_timeseries(path, snapshots, column_name=None):
     df = pd.read_csv(path)
@@ -19,6 +21,31 @@ def load_timeseries(path, snapshots, column_name=None):
     return series.astype(float)
 
 
+def get_active_costs_path(cfg, base_dir):
+    """
+    Resolve the active cost dataset from config.
+    Expected config structure:
+
+    costs:
+      active_dataset: "costs_2025"
+      datasets:
+        costs_2025: "data/costs_2025.csv"
+        costs_2030: "data/costs_2030.csv"
+      discount_rate: 0.07
+    """
+    costs_cfg = cfg["costs"]
+    active_name = costs_cfg["active_dataset"]
+    datasets = costs_cfg["datasets"]
+
+    if active_name not in datasets:
+        raise KeyError(
+            f"Unknown cost dataset '{active_name}'. "
+            f"Available options: {list(datasets.keys())}"
+        )
+
+    return base_dir / datasets[active_name]
+
+
 def get_cost_value(costs_df, technology, parameter):
     row = costs_df[
         (costs_df["technology"] == technology) &
@@ -29,6 +56,7 @@ def get_cost_value(costs_df, technology, parameter):
         raise KeyError(f"Missing {parameter} for technology {technology} in costs file")
 
     return float(row["value"].iloc[0])
+
 
 def annualized_capital_cost(overnight_eur_per_mw, lifetime_years, discount_rate, n_snapshots):
     """
@@ -42,8 +70,25 @@ def annualized_capital_cost(overnight_eur_per_mw, lifetime_years, discount_rate,
     else:
         crf = 1.0 / lifetime_years
 
-    annualized = overnight_eur_per_mw * crf          # EUR/MW/year
-    return annualized * (n_snapshots / 8760)          # EUR/MW for model period
+    annualized = overnight_eur_per_mw * crf
+    return annualized * (n_snapshots / 8760)
+
+
+def fom_as_marginal_cost(costs_df, technology):
+    """
+    Convert fixed O&M (% of investment per year) into an equivalent EUR/MWh
+    so it shows up in PyPSA OPEX statistics.
+    """
+    investment_eur_per_mw = get_cost_value(costs_df, technology, "investment")
+    fom_percent_per_year = get_cost_value(costs_df, technology, "FOM")
+    return investment_eur_per_mw * (fom_percent_per_year / 100.0) / 8760.0
+
+
+def mining_revenue_per_mwh(hashprice_eur_per_th_day, asic_efficiency_j_per_th):
+    mw_per_th = asic_efficiency_j_per_th / 1e6
+    mwh_per_th_day = mw_per_th * 24.0
+    return hashprice_eur_per_th_day / mwh_per_th_day
+
 
 def build_test_network(cfg):
     n = pypsa.Network()
@@ -55,12 +100,13 @@ def build_test_network(cfg):
     base_dir = Path(__file__).resolve().parent.parent
     data_files = cfg["data_files"]
 
-    costs_path = base_dir / data_files["costs"]
+    costs_path = get_active_costs_path(cfg, base_dir)
     solar_cf_path = base_dir / data_files["solar_cf"]
     wind_cf_path = base_dir / data_files["wind_cf"]
     electricity_demand_path = base_dir / data_files["electricity_demand"]
 
     costs_df = pd.read_csv(costs_path)
+    print(f"Using cost dataset: {cfg['costs']['active_dataset']} -> {costs_path}")
 
     solar_cf = load_timeseries(solar_cf_path, n.snapshots)
     wind_cf = load_timeseries(wind_cf_path, n.snapshots)
@@ -77,27 +123,35 @@ def build_test_network(cfg):
         hydrogen_demand_path = base_dir / data_files["hydrogen_demand"]
         hydrogen_demand = load_timeseries(hydrogen_demand_path, n.snapshots)
 
-    discount_rate = float(cfg.get("costs", {}).get("discount_rate", 0.07))
+    discount_rate = float(cfg["costs"].get("discount_rate", 0.07))
 
     solar_capital_cost = annualized_capital_cost(
         get_cost_value(costs_df, "solar-utility", "investment"),
         get_cost_value(costs_df, "solar-utility", "lifetime"),
-        discount_rate, snapshots
+        discount_rate,
+        snapshots,
     )
+    solar_marginal_cost = fom_as_marginal_cost(costs_df, "solar-utility")
+
     wind_capital_cost = annualized_capital_cost(
         get_cost_value(costs_df, "onwind", "investment"),
         get_cost_value(costs_df, "onwind", "lifetime"),
-        discount_rate, snapshots
+        discount_rate,
+        snapshots,
     )
+    wind_marginal_cost = fom_as_marginal_cost(costs_df, "onwind")
+
     electrolyzer_capital_cost = annualized_capital_cost(
         get_cost_value(costs_df, "electrolysis", "investment"),
         get_cost_value(costs_df, "electrolysis", "lifetime"),
-        discount_rate, snapshots
+        discount_rate,
+        snapshots,
     )
     hydrogen_storage_capital_cost = annualized_capital_cost(
         get_cost_value(costs_df, "hydrogen storage underground", "investment"),
         get_cost_value(costs_df, "hydrogen storage underground", "lifetime"),
-        discount_rate, snapshots
+        discount_rate,
+        snapshots,
     )
 
     hyd = cfg["hydrogen"]
@@ -137,7 +191,7 @@ def build_test_network(cfg):
         p_nom_extendable=True,
         p_max_pu=solar_cf,
         capital_cost=solar_capital_cost,
-        marginal_cost=0,
+        marginal_cost=solar_marginal_cost,
     )
 
     n.add(
@@ -148,7 +202,7 @@ def build_test_network(cfg):
         p_nom_extendable=True,
         p_max_pu=wind_cf,
         capital_cost=wind_capital_cost,
-        marginal_cost=0,
+        marginal_cost=wind_marginal_cost,
     )
 
     n.add(
@@ -172,40 +226,6 @@ def build_test_network(cfg):
         capital_cost=hydrogen_storage_capital_cost,
     )
 
-        # ── Bitcoin mining (flexible electricity sink) ─────────────────────────
-    mining_cfg = cfg.get("mining", {})
-    mining_enabled = bool(mining_cfg.get("enabled", False))
-
-    if mining_enabled:
-        mining_max_mw     = float(mining_cfg.get("max_capacity_mw", 0))
-        mining_min_frac   = float(mining_cfg.get("min_utilization", 0.0))
-        mining_mc         = float(mining_cfg.get("marginal_cost", -50))
-
-        # Flexible mining load: modelled as a Generator with negative marginal cost.
-        # Negative mc means the optimizer wants to run it — it "earns" from mining.
-        # p_nom is the max capacity; optimizer decides hourly utilization between 0 and p_nom.
-        n.add(
-            "Generator",
-            "bitcoin_mining",
-            bus="electricity",
-            carrier="bitcoin_mining",
-            p_nom=mining_max_mw,          # fixed installed capacity
-            p_nom_extendable=False,       # capacity is a scenario assumption, not optimized
-            p_min_pu=mining_min_frac,     # minimum utilization (0 = fully flexible)
-            p_max_pu=1.0,
-            marginal_cost=mining_mc,      # negative = revenue to system when running
-            sign=-1,                      # sign=-1 means this is a load, not a generator
-        )
-
-        # Minimum always-on floor (if min_utilization > 0):
-        # This is already enforced by p_min_pu above, no separate Load needed.
-
-        print(f"  ✓ Bitcoin mining added: max={mining_max_mw} MW, "
-              f"min_utilization={mining_min_frac*100:.0f}%, "
-              f"marginal_cost={mining_mc} EUR/MWh")
-    else:
-        print("  ℹ Bitcoin mining disabled (mining.enabled: false in config)")
-
     n.add(
         "Generator",
         "load_shedding",
@@ -215,5 +235,31 @@ def build_test_network(cfg):
         marginal_cost=float(tech["load_shedding_marginal_cost"]),
     )
 
-    return n
+    mining_cfg = cfg.get("mining", {})
+    mining_enabled = bool(mining_cfg.get("enabled", False))
 
+    if mining_enabled:
+        mining_max_mw = float(mining_cfg.get("max_capacity_mw", 0))
+        mining_min_frac = float(mining_cfg.get("min_utilization", 0.0))
+
+        hashprice = float(mining_cfg.get("hashprice_eur_per_th_day", 0.0))
+        asic_eff = float(mining_cfg.get("asic_efficiency_j_per_th", 16.0))
+        other_opex = float(mining_cfg.get("other_opex_eur_per_mwh", 0.0))
+
+        mining_revenue = mining_revenue_per_mwh(hashprice, asic_eff)
+        mining_mc = -(mining_revenue - other_opex)
+
+        n.add(
+            "Generator",
+            "bitcoin_mining",
+            bus="electricity",
+            carrier="bitcoin_mining",
+            p_nom=mining_max_mw,
+            p_nom_extendable=False,
+            p_min_pu=mining_min_frac,
+            p_max_pu=1.0,
+            marginal_cost=mining_mc,
+            sign=-1,
+        )
+
+    return n

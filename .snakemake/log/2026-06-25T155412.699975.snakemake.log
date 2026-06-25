@@ -1,0 +1,44 @@
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 1 (use --cores to define parallelism)
+Rules claiming more threads will be scaled down.
+Job stats:
+job                  count
+-----------------  -------
+all                      1
+analyze_results          1
+preprocess_inputs        1
+run_model                1
+total                    4
+
+Select jobs to execute...
+
+[Thu Jun 25 15:54:13 2026]
+rule preprocess_inputs:
+    output: data/processed_inputs.done
+    log: results/logs/preprocess_inputs.log
+    jobid: 3
+    reason: Missing output files: data/processed_inputs.done
+    resources: tmpdir=/tmp
+
+
+        mkdir -p results/logs data
+        python scripts/preprocess_inputs.py > results/logs/preprocess_inputs.log 2>&1
+        touch data/processed_inputs.done
+        
+[Thu Jun 25 15:54:16 2026]
+Error in rule preprocess_inputs:
+    jobid: 3
+    output: data/processed_inputs.done
+    log: results/logs/preprocess_inputs.log (check log file(s) for error details)
+    shell:
+        
+        mkdir -p results/logs data
+        python scripts/preprocess_inputs.py > results/logs/preprocess_inputs.log 2>&1
+        touch data/processed_inputs.done
+        
+        (one of the commands exited with non-zero exit code; note that snakemake uses bash strict mode!)
+
+Shutting down, this might take some time.
+Exiting because a job execution failed. Look above for error message
+Complete log: .snakemake/log/2026-06-25T155412.699975.snakemake.log

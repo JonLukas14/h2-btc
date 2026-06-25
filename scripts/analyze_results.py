@@ -1,16 +1,19 @@
 from pathlib import Path
 import yaml
+import pypsa
 import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from build_network import build_test_network
 
-config_dir = Path(__file__).resolve().parent.parent / "configs"
-scenario_file = config_dir / "scenario.yaml"
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_FILE = BASE_DIR / "configs" / "scenario.yaml"
+NETWORK_FILE = BASE_DIR / "results" / "network_solved.nc"
+OUTDIR = BASE_DIR / "results"
 
-with open(scenario_file, "r", encoding="utf-8") as f:
+
+with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 
 required = ["scenario_name", "system", "demand", "costs", "data_files", "technology", "hydrogen"]
@@ -18,24 +21,16 @@ missing = [k for k in required if k not in cfg]
 if missing:
     raise KeyError(f"Missing top-level keys: {missing}")
 
-outdir = Path(__file__).resolve().parent.parent / "results"
-outdir.mkdir(exist_ok=True)
+OUTDIR.mkdir(exist_ok=True)
 
 print("=== SCENARIO FILE ===")
-print(scenario_file.name)
+print(CONFIG_FILE.name)
 
 print("=== MINING SETTINGS ===")
 print(yaml.dump(cfg.get("mining", {}), sort_keys=False))
 
-print(cfg.keys())
-print(cfg.get("system", {}).keys())
-
-n = build_test_network(cfg)
-
-status, condition = n.optimize(
-    solver_name="highs",
-    include_objective_constant=False
-)
+n = pypsa.Network()
+n.import_from_netcdf(NETWORK_FILE)
 
 total_capex = float(n.statistics.capex().sum())
 total_opex = float(n.statistics.opex().sum())
@@ -50,7 +45,6 @@ solar_generation = float(generator_dispatch.get("solar", 0.0))
 wind_generation = float(generator_dispatch.get("wind", 0.0))
 load_shedding_generation = float(generator_dispatch.get("load_shedding", 0.0))
 
-# ── Mining results ──────────────────────────────────────────────────────────
 mining_enabled = cfg.get("mining", {}).get("enabled", False)
 mining_consumption_mwh = 0.0
 mining_utilization_rate = None
@@ -67,14 +61,15 @@ if mining_enabled and "bitcoin_mining" in n.generators.index:
     if mining_max_mw > 0:
         mining_utilization_rate = mining_consumption_mwh / (mining_max_mw * hours)
 
-    print(f"\n=== MINING RESULTS ===")
+    print("\n=== MINING RESULTS ===")
     print(f"  Total electricity consumed by mining : {mining_consumption_mwh:,.1f} MWh")
-    print(f"  Mining utilization rate              : "
-          f"{mining_utilization_rate*100:.1f}%" if mining_utilization_rate else "  N/A")
-    print(f"  Hours at full capacity               : "
-          f"{(mining_timeseries >= mining_max_mw * 0.99).sum()}")
-    print(f"  Hours at zero                        : "
-          f"{(mining_timeseries <= 0.01).sum()}")
+    print(
+        f"  Mining utilization rate              : {mining_utilization_rate*100:.1f}%"
+        if mining_utilization_rate is not None else
+        "  Mining utilization rate              : N/A"
+    )
+    print(f"  Hours at full capacity               : {(mining_timeseries >= mining_max_mw * 0.99).sum()}")
+    print(f"  Hours at zero                        : {(mining_timeseries <= 0.01).sum()}")
 
 electricity_demand_total = float(load_totals.get("electricity_demand", 0.0))
 hydrogen_demand_total = float(load_totals.get("hydrogen_demand", 0.0))
@@ -88,10 +83,8 @@ simple_cost_per_h2 = system_cost / hydrogen_output if hydrogen_output > 0 else N
 
 summary = pd.DataFrame(
     {
-        "scenario_file": [scenario_file.name],
+        "scenario_file": [CONFIG_FILE.name],
         "scenario_name": [cfg["scenario_name"]],
-        "status": [status],
-        "termination": [condition],
         "objective": [n.objective],
         "total_capex": [total_capex],
         "total_opex": [total_opex],
@@ -105,9 +98,9 @@ summary = pd.DataFrame(
         "hydrogen_output_mwh": [hydrogen_output],
         "simple_lcoe_per_mwh": [simple_lcoe],
         "simple_cost_per_hydrogen_mwh": [simple_cost_per_h2],
-        "mining_consumption_mwh":       [mining_consumption_mwh],
-        "mining_utilization_rate":      [mining_utilization_rate],
-        "mining_max_capacity_mw":       [mining_max_mw if mining_enabled else 0],
+        "mining_consumption_mwh": [mining_consumption_mwh],
+        "mining_utilization_rate": [mining_utilization_rate],
+        "mining_max_capacity_mw": [mining_max_mw if mining_enabled else 0],
     }
 )
 
@@ -147,7 +140,6 @@ capacity_factors = pd.DataFrame(
     }
 )
 
-# ---- Curtailment ----
 try:
     curtailment_stats = n.statistics.curtailment(
         components=["Generator"],
@@ -179,7 +171,6 @@ curtailment["curtailed_mwh"] = curtailment["curtailed_mwh"].fillna(
 curtailment["curtailment_rate"] = curtailment["curtailed_mwh"] / curtailment["available_mwh"]
 curtailment["curtailment_rate"] = curtailment["curtailment_rate"].fillna(0.0)
 
-# ---- Storage state of charge ----
 if hasattr(n.stores_t, "e") and "hydrogen_storage" in n.stores_t.e.columns:
     storage_soc = n.stores_t.e["hydrogen_storage"].copy()
 else:
@@ -187,21 +178,19 @@ else:
 
 storage_timeseries = pd.DataFrame({"hydrogen_storage_soc_mwh": storage_soc}, index=n.snapshots)
 
-# ---- Save CSVs ----
-summary.to_csv(outdir / "summary.csv", index=False)
-generators.to_csv(outdir / "generators.csv")
-links.to_csv(outdir / "links.csv")
-stores.to_csv(outdir / "stores.csv")
-generator_dispatch.to_frame("total_generation_mwh").to_csv(outdir / "generator_dispatch.csv")
-load_totals.to_frame("total_load_mwh").to_csv(outdir / "load_totals.csv")
-link_p0.to_frame("p0_total_mwh").to_csv(outdir / "link_p0.csv")
-link_p1.to_frame("p1_total_mwh").to_csv(outdir / "link_p1.csv")
-dispatch_timeseries.to_csv(outdir / "dispatch_timeseries.csv")
-capacity_factors.to_csv(outdir / "capacity_factors.csv", index=False)
-curtailment.to_csv(outdir / "curtailment.csv", index=False)
-storage_timeseries.to_csv(outdir / "storage_timeseries.csv")
+summary.to_csv(OUTDIR / "summary.csv", index=False)
+generators.to_csv(OUTDIR / "generators.csv")
+links.to_csv(OUTDIR / "links.csv")
+stores.to_csv(OUTDIR / "stores.csv")
+generator_dispatch.to_frame("total_generation_mwh").to_csv(OUTDIR / "generator_dispatch.csv")
+load_totals.to_frame("total_load_mwh").to_csv(OUTDIR / "load_totals.csv")
+link_p0.to_frame("p0_total_mwh").to_csv(OUTDIR / "link_p0.csv")
+link_p1.to_frame("p1_total_mwh").to_csv(OUTDIR / "link_p1.csv")
+dispatch_timeseries.to_csv(OUTDIR / "dispatch_timeseries.csv")
+capacity_factors.to_csv(OUTDIR / "capacity_factors.csv", index=False)
+curtailment.to_csv(OUTDIR / "curtailment.csv", index=False)
+storage_timeseries.to_csv(OUTDIR / "storage_timeseries.csv")
 
-# ---- Helper tables for plotting ----
 generation_data = pd.DataFrame(
     {
         "source": ["Solar", "Wind", "Load shedding"],
@@ -213,11 +202,11 @@ capacity_data = pd.DataFrame(
     {
         "asset": ["Solar", "Wind", "Electrolyzer", "Hydrogen storage", "Load shedding"],
         "value": [
-            float(generators.loc["solar", "p_nom_opt"]),
-            float(generators.loc["wind", "p_nom_opt"]),
-            float(links.loc["electrolyzer", "p_nom_opt"]),
-            float(stores.loc["hydrogen_storage", "e_nom_opt"]),
-            float(generators.loc["load_shedding", "p_nom_opt"]),
+            float(generators.loc["solar", "p_nom_opt"]) if "solar" in generators.index else 0.0,
+            float(generators.loc["wind", "p_nom_opt"]) if "wind" in generators.index else 0.0,
+            float(links.loc["electrolyzer", "p_nom_opt"]) if "electrolyzer" in links.index else 0.0,
+            float(stores.loc["hydrogen_storage", "e_nom_opt"]) if "hydrogen_storage" in stores.index else 0.0,
+            float(generators.loc["load_shedding", "p_nom_opt"]) if "load_shedding" in generators.index else 0.0,
         ],
     }
 )
@@ -225,80 +214,81 @@ capacity_data = pd.DataFrame(
 real_capacity = capacity_data[capacity_data["asset"] != "Load shedding"].copy()
 load_shedding_value = capacity_data.loc[capacity_data["asset"] == "Load shedding", "value"].iloc[0]
 
-# ---- CAPEX by technology chart ----
 capex_raw = n.statistics.capex(groupby="name")
-opex_raw  = n.statistics.opex(groupby="name")
+opex_raw = n.statistics.opex(groupby="name")
 
 capex_by_tech = capex_raw.droplevel(0) if capex_raw.index.nlevels > 1 else capex_raw
-opex_by_tech  = opex_raw.droplevel(0)  if opex_raw.index.nlevels > 1 else opex_raw
+opex_by_tech = opex_raw.droplevel(0) if opex_raw.index.nlevels > 1 else opex_raw
 
-keep = ["solar", "wind", "electrolyzer", "hydrogen_storage"]
-labels_map = {
-    "solar": "Solar",
-    "wind": "Wind",
+all_assets = ["solar", "wind", "electrolyzer", "hydrogen_storage", "bitcoin_mining"]
+_lmap = {
+    "solar": "Solar", "wind": "Wind",
     "electrolyzer": "Electrolyzer",
-    "hydrogen_storage": "H\u2082 Storage",
+    "hydrogen_storage": "H₂ Storage",
+    "bitcoin_mining": "BTC Mining",
 }
+_dl = [_lmap[a] for a in all_assets]
+_cv = [float(capex_by_tech.get(a, 0)) / 1e6 for a in all_assets]
+_ov = [float(opex_by_tech.get(a, 0)) / 1e6 for a in all_assets]
+_tv = [c + o for c, o in zip(_cv, _ov)]
 
-capex_vals = [float(capex_by_tech.get(a, 0)) / 1e6 for a in keep]
-opex_vals  = [float(opex_by_tech.get(a, 0))  / 1e6 for a in keep]
-total_vals = [c + o for c, o in zip(capex_vals, opex_vals)]
-display_labels = [labels_map[a] for a in keep]
-colors_capex = ["#f5a623", "#01696f", "#006494", "#7a39bb"]
+def _fmt(v):
+    if v == 0:
+        return ""
+    return f"−{abs(v):,.0f}" if v < 0 else f"{v:,.0f}"
 
-fig_cost = go.Figure()
-
-for label, val, col in zip(display_labels, capex_vals, colors_capex):
-    fig_cost.add_trace(go.Bar(
-        name=f"{label} CAPEX",
-        x=[label],
-        y=[val],
-        marker_color=col,
-        text=f"{val:,.0f}m" if val > 10 else "",
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=12, color="white"),
-    ))
-
-for label, tot in zip(display_labels, total_vals):
-    fig_cost.add_annotation(
-        x=label, y=tot,
-        text=f"<b>{tot:,.0f}m</b>",
-        showarrow=False,
-        yshift=10,
-        font=dict(size=13, color="#28251d"),
-    )
-
-fig_cost.update_layout(
-    barmode="stack",
-    title=dict(
-        text=(
-            f"Annualised System CAPEX by Technology (Million EUR)<br>"
-            f"<span style='font-size:15px;font-weight:normal;color:#666;'>"
-            f"Scenario: {cfg['scenario_name']} · 7% discount rate"
-            f"</span>"
+def _cost_chart(x_labels, capex_v, opex_v, total_v, title_suffix, fname):
+    fig = go.Figure()
+    for name, vals, color in [
+        ("CAPEX", capex_v, "#01696f"),
+        ("OPEX",  opex_v,  "#7a39bb"),
+        ("Total", total_v, "#f5a623"),
+    ]:
+        fig.add_trace(go.Bar(
+            name=name, x=x_labels, y=vals,
+            marker_color=color,
+            text=[_fmt(v) for v in vals],
+            textposition="outside",
+            textfont=dict(size=12, color="#333"),
+            cliponaxis=False,
+        ))
+    fig.update_layout(
+        barmode="group",
+        title=dict(
+            text=(
+                f"Annualised Cost — {title_suffix}<br>"
+                f"<span style='font-size:13px;font-weight:normal;color:#666;'>"
+                f"Scenario: {cfg['scenario_name']} · 7% discount rate · Million EUR · Negative OPEX = revenue"
+                f"</span>"
+            ),
+            font=dict(size=16), x=0.5, xanchor="center",
         ),
-        font=dict(size=18),
-        x=0.5,
-        xanchor="center",
-    ),
-    legend=dict(orientation="h", yanchor="bottom", y=-0.25,
-                xanchor="center", x=0.5, font=dict(size=12)),
-    font=dict(size=13, family="Arial"),
-    plot_bgcolor="white",
-    paper_bgcolor="white",
-    yaxis=dict(title="Million EUR", gridcolor="#ebebeb",
-               tickformat=",.0f", tickfont=dict(size=12)),
-    xaxis=dict(tickfont=dict(size=14)),
-    margin=dict(t=130, b=120, l=90, r=40),
-    width=850,
-    height=540,
-)
+        legend=dict(
+            orientation="h", yanchor="bottom", y=-0.22,
+            xanchor="center", x=0.5, font=dict(size=13),
+        ),
+        font=dict(size=13, family="Arial"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        yaxis=dict(
+            title="Million EUR", gridcolor="#ebebeb",
+            tickformat=",.0f",
+            zeroline=True, zerolinecolor="#999", zerolinewidth=1.5,
+        ),
+        xaxis=dict(tickfont=dict(size=14)),
+        margin=dict(t=130, b=120, l=90, r=50),
+        width=750, height=520,
+    )
+    fig.write_image(str(OUTDIR / fname))
 
-fig_cost.update_traces(cliponaxis=False)
-fig_cost.write_image(str(outdir / "cost_by_technology.png"))
+_big = ["Solar", "Wind"]
+_bi = [_dl.index(l) for l in _big]
+_cost_chart(_big, [_cv[i] for i in _bi], [_ov[i] for i in _bi], [_tv[i] for i in _bi], "Solar & Wind", "cost_solar_wind.png")
 
-# ---- Generation mix chart ----
+_sm = ["Electrolyzer", "H₂ Storage", "BTC Mining"]
+_si = [_dl.index(l) for l in _sm]
+_cost_chart(_sm, [_cv[i] for i in _si], [_ov[i] for i in _si], [_tv[i] for i in _si], "Electrolyzer, H₂ Storage & BTC Mining", "cost_small_assets.png")
+
 fig, ax = plt.subplots(figsize=(8, 5), dpi=160)
 bars = ax.bar(generation_data["source"], generation_data["value"], color=["#01696f", "#006494", "#a13544"])
 ax.set_title("Generation Mix", fontsize=14, weight="bold")
@@ -307,16 +297,14 @@ ax.bar_label(bars, fmt="%.1f", padding=3)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 fig.tight_layout()
-fig.savefig(outdir / "generation_mix.png", bbox_inches="tight")
+fig.savefig(OUTDIR / "generation_mix.png", bbox_inches="tight")
 plt.close(fig)
 
-# ---- Optimized capacities chart ----
 fig, ax = plt.subplots(figsize=(9, 5), dpi=160)
 bars = ax.bar(
-    real_capacity["asset"],
-    real_capacity["value"],
+    real_capacity["asset"], real_capacity["value"],
     color=["#01696f", "#006494", "#7a39bb", "#9a9a9a"],
-    width=0.68
+    width=0.68,
 )
 ax.set_title("Optimized Capacities", fontsize=14, weight="bold")
 ax.set_ylabel("MW / MWh")
@@ -339,15 +327,16 @@ ax.text(
     fontsize=10, color="#444444",
 )
 fig.tight_layout()
-fig.savefig(outdir / "optimized_capacities.png", bbox_inches="tight")
+fig.savefig(OUTDIR / "optimized_capacities.png", bbox_inches="tight")
 plt.close(fig)
 
-# ---- Hydrogen storage SOC chart ----
+# Static PNG for reports
 fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
 ax.plot(
     storage_timeseries.index,
     storage_timeseries["hydrogen_storage_soc_mwh"],
-    color="#7a39bb", linewidth=2,
+    color="#7a39bb",
+    linewidth=2,
 )
 ax.set_title("Hydrogen Storage State of Charge", fontsize=14, weight="bold")
 ax.set_ylabel("MWh")
@@ -357,10 +346,34 @@ ax.spines["right"].set_visible(False)
 ax.grid(alpha=0.2)
 fig.autofmt_xdate()
 fig.tight_layout()
-fig.savefig(outdir / "hydrogen_storage_soc.png", bbox_inches="tight")
+fig.savefig(OUTDIR / "hydrogen_storage_soc.png", bbox_inches="tight")
 plt.close(fig)
 
-# ---- Interactive dashboard ----
+# Interactive HTML for browser exploration
+fig_html = go.Figure()
+fig_html.add_trace(
+    go.Scatter(
+        x=storage_timeseries.index,
+        y=storage_timeseries["hydrogen_storage_soc_mwh"],
+        mode="lines",
+        name="Hydrogen SOC",
+        line=dict(color="#7a39bb", width=3),
+        hovertemplate="%{x|%Y-%m-%d %H:%M}<br>%{y:.1f} MWh<extra></extra>",
+    )
+)
+fig_html.update_layout(
+    title="Hydrogen Storage State of Charge",
+    xaxis_title="Time",
+    yaxis_title="MWh",
+    template="plotly_white",
+    hovermode="x unified",
+)
+fig_html.write_html(
+    OUTDIR / "hydrogen_storage_soc.html",
+    full_html=True,
+    include_plotlyjs="cdn",
+)
+
 cost_data = pd.DataFrame(
     {
         "component": ["CAPEX", "OPEX", "TOTAL"],
@@ -382,18 +395,12 @@ fig = make_subplots(
     ],
 )
 
-fig.add_trace(go.Bar(x=cost_data["component"], y=cost_data["value"],
-    marker_color=["#01696f", "#7a39bb", "#444444"], name="Costs"), row=1, col=1)
-fig.add_trace(go.Bar(x=generation_data["source"], y=generation_data["value"],
-    marker_color=["#01696f", "#006494", "#a13544"], name="Generation"), row=1, col=2)
-fig.add_trace(go.Bar(x=real_capacity["asset"], y=real_capacity["value"],
-    marker_color=["#01696f", "#006494", "#7a39bb", "#9a9a9a"], name="Capacities"), row=2, col=1)
-fig.add_trace(go.Scatter(x=storage_timeseries.index, y=storage_timeseries["hydrogen_storage_soc_mwh"],
-    mode="lines", line=dict(color="#7a39bb", width=2), name="Hydrogen SOC"), row=2, col=2)
-fig.add_trace(go.Bar(x=capacity_factors["asset"], y=capacity_factors["capacity_factor"],
-    marker_color=["#01696f", "#006494", "#7a39bb"], name="Capacity factors"), row=3, col=1)
-fig.add_trace(go.Bar(x=curtailment["asset"], y=curtailment["curtailment_rate"],
-    marker_color=["#01696f", "#006494"], name="Curtailment"), row=3, col=2)
+fig.add_trace(go.Bar(x=cost_data["component"], y=cost_data["value"], marker_color=["#01696f", "#7a39bb", "#444444"], name="Costs"), row=1, col=1)
+fig.add_trace(go.Bar(x=generation_data["source"], y=generation_data["value"], marker_color=["#01696f", "#006494", "#a13544"], name="Generation"), row=1, col=2)
+fig.add_trace(go.Bar(x=real_capacity["asset"], y=real_capacity["value"], marker_color=["#01696f", "#006494", "#7a39bb", "#9a9a9a"], name="Capacities"), row=2, col=1)
+fig.add_trace(go.Scatter(x=storage_timeseries.index, y=storage_timeseries["hydrogen_storage_soc_mwh"], mode="lines", line=dict(color="#7a39bb", width=2), name="Hydrogen SOC"), row=2, col=2)
+fig.add_trace(go.Bar(x=capacity_factors["asset"], y=capacity_factors["capacity_factor"], marker_color=["#01696f", "#006494", "#7a39bb"], name="Capacity factors"), row=3, col=1)
+fig.add_trace(go.Bar(x=curtailment["asset"], y=curtailment["curtailment_rate"], marker_color=["#01696f", "#006494"], name="Curtailment"), row=3, col=2)
 
 fig.update_yaxes(title_text="EUR", row=1, col=1)
 fig.update_yaxes(title_text="MWh", row=1, col=2)
@@ -409,10 +416,9 @@ fig.update_layout(
     template="plotly_white",
 )
 
-fig.write_html(outdir / "results_dashboard.html", include_plotlyjs="cdn")
-summary.style.format(precision=2).to_html(outdir / "summary_table.html", encoding="utf-8")
+fig.write_html(OUTDIR / "results_dashboard.html", include_plotlyjs="cdn")
+summary.style.format(precision=2).to_html(OUTDIR / "summary_table.html", encoding="utf-8")
 
-# ---- Print to terminal ----
 print("=== SUMMARY ===")
 print(summary.T)
 print("\n=== GENERATORS ===")
@@ -430,4 +436,3 @@ print(dispatch_timeseries.head())
 print("\n=== STORAGE SOC HEAD ===")
 print(storage_timeseries.head())
 print("\nCSV/HTML/PNG files written to ../results")
-

@@ -2,10 +2,10 @@
 #
 # Reads REAL data from:
 #   - ~/git/pypsa-kz-data/           (sibling repo, not inside project)
-#   - ~/git/kazakhstan_thesis_test/technology-data/outputs/costs_2030.csv
+#   - technology-data/outputs/*.csv  (selected via scenario.yaml)
 #
 # Writes model-ready CSVs to:
-#   - ~/git/kazakhstan_thesis_test/data/
+#   - data/
 
 import sys
 import requests
@@ -14,17 +14,17 @@ import pandas as pd
 import numpy as np
 import yaml
 
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR  = Path(__file__).resolve().parent.parent
-DATA_DIR  = BASE_DIR / "data"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
 TECH_REPO = BASE_DIR / "technology-data"
 DATA_DIR.mkdir(exist_ok=True)
 
-# Auto-detect pypsa-kz-data: check inside project, then as sibling repo
 _kz_candidates = [
-    BASE_DIR / "pypsa-kz-data",                      # inside project
-    BASE_DIR.parent / "pypsa-kz-data",               # sibling of project
-    Path.home() / "git" / "pypsa-kz-data",           # explicit ~/git/
+    BASE_DIR / "pypsa-kz-data",
+    BASE_DIR.parent / "pypsa-kz-data",
+    Path.home() / "git" / "pypsa-kz-data",
 ]
 KZ_REPO = next(
     (p for p in _kz_candidates if (p / "data" / "kz_demand_validation.csv").exists()),
@@ -36,12 +36,28 @@ if KZ_REPO is None:
         print(f"  {p}  (exists: {p.exists()})")
     sys.exit(1)
 
+
 # ── Config ────────────────────────────────────────────────────────────────────
-with open(BASE_DIR / "configs" / "scenario.yaml", "r") as f:
+with open(BASE_DIR / "configs" / "scenario.yaml", "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 
-YEAR      = int(cfg["system"]["year"])       # 2030
-SNAPSHOTS = int(cfg["system"]["snapshots"])  # 24 (test) or 8760 (full year)
+YEAR = int(cfg["system"]["year"])
+SNAPSHOTS = int(cfg["system"]["snapshots"])
+
+
+def get_active_costs_path(cfg, base_dir):
+    costs_cfg = cfg["costs"]
+    active_name = costs_cfg["active_dataset"]
+    datasets = costs_cfg["datasets"]
+
+    if active_name not in datasets:
+        raise KeyError(
+            f"Unknown cost dataset '{active_name}'. "
+            f"Available options: {list(datasets.keys())}"
+        )
+
+    return base_dir / datasets[active_name]
+
 
 print(f"\nBase dir : {BASE_DIR}")
 print(f"KZ repo  : {KZ_REPO}  (exists: {KZ_REPO.exists()})")
@@ -50,24 +66,21 @@ print(f"Year={YEAR}, Snapshots={SNAPSHOTS}\n")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 1. COSTS  ←  technology-data/outputs/costs_2030.csv
+# 1. COSTS  ← selected via scenario.yaml
 # ═════════════════════════════════════════════════════════════════════════════
 def build_costs():
-    source = TECH_REPO / "outputs" / f"costs_{YEAR}.csv"
+    source = get_active_costs_path(cfg, BASE_DIR)
     if not source.exists():
         sys.exit(f"[ERROR] Missing: {source}")
 
     df = pd.read_csv(source)
 
-    # ── Print all technology names that contain relevant keywords ─────────────
     keywords = ["solar", "wind", "electro", "hydrogen", "pem", "alkaline"]
     matches = df[df["technology"].str.lower().str.contains("|".join(keywords), na=False)]
     print("  Technologies in costs file matching solar/wind/electrolysis/hydrogen:")
     for t in sorted(matches["technology"].unique()):
         print(f"    {t}")
 
-    # ── Exact technology names from costs_2030.csv ────────────────────────────
-    # These names were verified by inspecting the file above.
     keep_techs = [
         "solar-utility",
         "onwind",
@@ -80,9 +93,8 @@ def build_costs():
         df["technology"].isin(keep_techs) &
         df["parameter"].isin(keep_params)
     ][["technology", "parameter", "value", "unit"]].copy()
-    subset.loc[subset["parameter"] == "investment", "value"] *= 1000
 
-   
+    subset.loc[subset["parameter"] == "investment", "value"] *= 1000
 
     if subset.empty:
         print("\n  [WARNING] No rows matched. Printing ALL available technologies:")
@@ -92,20 +104,19 @@ def build_costs():
             "  Update the keep_techs list above to match the printed names."
         )
 
+    print(f"\n  Using active cost dataset: {cfg['costs']['active_dataset']}")
+    print(f"  Source file: {source}")
     print(f"\n  Matched rows:")
     print(subset.to_string(index=False))
 
-    out = DATA_DIR / "costs_2030.csv"
+    out_name = f"{cfg['costs']['active_dataset']}.csv"
+    out = DATA_DIR / out_name
     subset[["technology", "parameter", "value"]].to_csv(out, index=False)
-    print(f"\n  ✓ costs written → data/costs_2030.csv  ({len(subset)} rows)")
+    print(f"\n  ✓ costs written → data/{out_name}  ({len(subset)} rows)")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. ELECTRICITY DEMAND  ←  pypsa-kz-data/data/kz_demand_validation.csv
-#    Columns: year, month, demand_gegis, demand_korem   (monthly GWh)
-#    Strategy: use KOREM data (official KZ grid operator), latest year available,
-#              convert monthly GWh → average MW per hour within each month,
-#              then produce an hourly profile for the full year.
+# 2. ELECTRICITY DEMAND
 # ═════════════════════════════════════════════════════════════════════════════
 def build_electricity_demand():
     source = KZ_REPO / "data" / "kz_demand_validation.csv"
@@ -116,42 +127,36 @@ def build_electricity_demand():
     print(f"  Demand file columns: {list(df.columns)}")
     print(f"  Years available: {sorted(df['year'].unique())}")
 
-    # Use most recent full year available (not 2030 — we use latest real data)
     latest_year = df["year"].max()
     df_year = df[df["year"] == latest_year].sort_values("month").reset_index(drop=True)
     print(f"  Using year: {latest_year}  (most recent in file)")
     print(df_year[["month", "demand_korem"]].to_string(index=False))
 
-    # Monthly GWh → MW per hour  (GWh * 1000 / hours_in_month)
-    # 2030 is not a leap year
     hours_per_month = [744, 672, 744, 720, 744, 720, 744, 744, 720, 744, 720, 744]
 
     monthly_gwh = df_year["demand_korem"].values.astype(float)
 
     hourly_demand = []
     for gwh, hrs in zip(monthly_gwh, hours_per_month):
-        mw = (gwh * 1000.0) / hrs   # GWh → MWh per hour = MW
+        mw = (gwh * 1000.0) / hrs
         hourly_demand.extend([mw] * hrs)
 
-    hourly_series = pd.Series(hourly_demand)  # 8760 rows for a full year
-    print(f"\n  Hourly MW — min: {hourly_series.min():.1f}, "
-          f"mean: {hourly_series.mean():.1f}, max: {hourly_series.max():.1f}")
+    hourly_series = pd.Series(hourly_demand)
+    print(f"\n  Hourly MW — min: {hourly_series.min():.1f}, mean: {hourly_series.mean():.1f}, max: {hourly_series.max():.1f}")
 
-    # Trim to model snapshots (24 for test, 8760 for full year)
     out_series = hourly_series.iloc[:SNAPSHOTS].reset_index(drop=True)
 
     out = DATA_DIR / "kz_electricity_demand.csv"
     pd.DataFrame({"electricity_mw": out_series.values}).to_csv(out, index=False)
-    print(f"  ✓ electricity demand written → data/kz_electricity_demand.csv  "
-          f"(rows={len(out_series)}, mean={out_series.mean():.1f} MW)")
+    print(f"  ✓ electricity demand written → data/kz_electricity_demand.csv  (rows={len(out_series)}, mean={out_series.mean():.1f} MW)")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 3. SOLAR CF  ←  PVGIS ERA5 API  (Zhambyl region, south Kazakhstan)
+# 3. SOLAR CF
 # ═════════════════════════════════════════════════════════════════════════════
 def build_solar_cf():
-    lat, lon = 43.3, 71.4   # Zhambyl region — good solar resource
-    pvgis_year = 2020        # latest ERA5 year in PVGIS; use as proxy for 2030
+    lat, lon = 43.3, 71.4
+    pvgis_year = 2020
 
     url = (
         f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
@@ -189,7 +194,7 @@ def _synthetic_solar():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. WIND CF  ←  PVGIS ERA5 API  (Mangystau region, western Kazakhstan)
+# 4. WIND CF
 # ═════════════════════════════════════════════════════════════════════════════
 def build_wind_cf():
     lat, lon = 43.6, 51.2
@@ -211,17 +216,12 @@ def build_wind_cf():
 
         ws_10m = pd.Series([entry["WS10m"] for entry in data["outputs"]["hourly"]])
 
-        # PVGIS returns wind speeds rounded to 1 decimal place (~96 unique values).
-        # Add small Gaussian noise (σ=0.1 m/s) to recover realistic CF variation.
-        # This preserves the statistical distribution while removing quantization.
-        rng = np.random.default_rng(seed=42)   # fixed seed for reproducibility
+        rng = np.random.default_rng(seed=42)
         ws_10m = ws_10m + rng.normal(0, 0.1, size=len(ws_10m))
         ws_10m = ws_10m.clip(lower=0.0)
 
-        # ERA5 bias correction for flat inland steppe terrain (+25%)
         ws_10m = ws_10m * 1.25
 
-        # Scale from 10m to 100m hub height (Hellmann power law, α=0.143)
         alpha = 0.20
         ws_hub = ws_10m * (100 / 10) ** alpha
 
@@ -237,17 +237,13 @@ def build_wind_cf():
         _synthetic_wind()
 
 
-
 def _power_curve(ws):
-    """Smooth 3-parameter power curve: cut-in 3 m/s, rated 12 m/s, cut-out 25 m/s."""
     ws = pd.Series(ws).astype(float)
     cf = pd.Series(0.0, index=ws.index)
 
-    # Between cut-in and rated: cubic ramp
     mask_ramp = (ws >= 3.0) & (ws < 12.0)
     cf[mask_ramp] = ((ws[mask_ramp] - 3.0) / (12.0 - 3.0)) ** 3
 
-    # Between rated and cut-out: full capacity
     mask_rated = (ws >= 12.0) & (ws <= 25.0)
     cf[mask_rated] = 1.0
 
@@ -261,17 +257,15 @@ def _synthetic_wind():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5. HYDROGEN DEMAND  ←  scenario.yaml thesis assumption
+# 5. HYDROGEN DEMAND
 # ═════════════════════════════════════════════════════════════════════════════
 def build_hydrogen_demand():
     h2_mw = float(cfg["demand"].get("hydrogen_mw", 0.0))
     s = pd.Series(np.full(SNAPSHOTS, h2_mw))
     pd.DataFrame({"hydrogen_mw": s.values}).to_csv(DATA_DIR / "kz_hydrogen_demand.csv", index=False)
-    print(f"  ✓ hydrogen demand written → data/kz_hydrogen_demand.csv  "
-          f"(constant {h2_mw} MW from scenario.yaml)")
+    print(f"  ✓ hydrogen demand written → data/kz_hydrogen_demand.csv  (constant {h2_mw} MW from scenario.yaml)")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print("── 1. Costs ────────────────────────────────────────────────────────")
     build_costs()
@@ -289,5 +283,4 @@ if __name__ == "__main__":
     build_hydrogen_demand()
 
     print("\n✓ Done. All real data written to data/")
-    print("  Now run:  python scripts/analyze_results.py\n")
-
+    print("  Now run: snakemake --cores 1 -p\n")

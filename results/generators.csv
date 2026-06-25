@@ -1,5 +1,5 @@
 name,carrier,p_nom_opt
-solar,solar,103981.92622698443
-wind,wind,131089.1257319699
-bitcoin_mining,bitcoin_mining,200.0
+solar,solar,6760636.242712244
+wind,wind,17851035.353509486
 load_shedding,load_shedding,1000000.0
+bitcoin_mining,bitcoin_mining,200.0

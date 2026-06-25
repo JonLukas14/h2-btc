@@ -1,30 +1,35 @@
-import subprocess
-import sys
 from pathlib import Path
+import yaml
+
 from build_network import build_test_network
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 
-def run_preprocessing():
-    script = BASE_DIR / "scripts" / "preprocess_inputs.py"
-    subprocess.run([sys.executable, str(script)], check=True)
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_FILE = BASE_DIR / "configs" / "scenario.yaml"
+RESULTS_DIR = BASE_DIR / "results"
+OUTPUT_NETWORK = RESULTS_DIR / "network_solved.nc"
+
 
 def main():
-    run_preprocessing()
-    # then continue with your existing build / solve workflow
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
 
-n = build_test_network()
-status, condition = n.optimize(solver_name="highs")
+    RESULTS_DIR.mkdir(exist_ok=True)
 
-print("Status:", status)
-print("Termination:", condition)
-print("Objective value:", n.objective)
+    n = build_test_network(cfg)
 
-print("\nGenerators:")
-print(n.generators[["carrier", "p_nom_opt"]])
+    status, condition = n.optimize(
+        solver_name="highs",
+        include_objective_constant=False
+    )
 
-print("\nLinks:")
-print(n.links[["carrier", "p_nom_opt"]])
+    n.export_to_netcdf(OUTPUT_NETWORK)
 
-print("\nStores:")
-print(n.stores[["carrier", "e_nom_opt"]])
+    print("Optimization finished")
+    print(f"Status: {status}")
+    print(f"Condition: {condition}")
+    print(f"Saved network to: {OUTPUT_NETWORK}")
+
+
+if __name__ == "__main__":
+    main()
