@@ -3,50 +3,47 @@ INFO:linopy.io:Writing objective.
 Using cost dataset: costs_2030 -> /home/jon/git/h2-btc/technology-data/outputs/costs_2030.csv
   Solar CF shape: (8760,), unique values: 4241
   Wind CF shape:  (8760,), unique values: 5383
-Writing constraints.:   0%|[38;2;128;191;255m          [0m| 0/13 [00:00<?, ?it/s]Writing constraints.:  38%|[38;2;128;191;255m███▊      [0m| 5/13 [00:00<00:00, 41.87it/s]Writing constraints.:  77%|[38;2;128;191;255m███████▋  [0m| 10/13 [00:00<00:00, 41.09it/s]Writing constraints.: 100%|[38;2;128;191;255m██████████[0m| 13/13 [00:00<00:00, 39.17it/s]
-Writing continuous variables.:   0%|[38;2;128;191;255m          [0m| 0/7 [00:00<?, ?it/s]Writing continuous variables.: 100%|[38;2;128;191;255m██████████[0m| 7/7 [00:00<00:00, 146.05it/s]
-INFO:linopy.io: Writing time: 0.69s
+Writing constraints.:   0%|[38;2;128;191;255m          [0m| 0/13 [00:00<?, ?it/s]Writing constraints.:  38%|[38;2;128;191;255m███▊      [0m| 5/13 [00:00<00:00, 44.84it/s]Writing constraints.:  77%|[38;2;128;191;255m███████▋  [0m| 10/13 [00:00<00:00, 41.79it/s]Writing constraints.: 100%|[38;2;128;191;255m██████████[0m| 13/13 [00:00<00:00, 38.00it/s]
+Writing continuous variables.:   0%|[38;2;128;191;255m          [0m| 0/7 [00:00<?, ?it/s]Writing continuous variables.: 100%|[38;2;128;191;255m██████████[0m| 7/7 [00:00<00:00, 155.51it/s]
+INFO:linopy.io: Writing time: 0.72s
 Running HiGHS 1.14.0 (git hash: 7df0786): Copyright (c) 2026 under MIT licence terms
-LP linopy-problem-oeyvfhif has 131404 rows; 61324 cols; 223025 nonzeros
+LP linopy-problem-a_4ancxo has 131404 rows; 61324 cols; 223025 nonzeros
 Coefficient ranges:
   Matrix  [1e-09, 1e+00]
-  Cost    [1e-03, 5e+03]
+  Cost    [1e-03, 1e+04]
   Bound   [0e+00, 0e+00]
-  RHS     [2e+01, 1e+06]
+  RHS     [2e+02, 1e+06]
 Presolving model
 47821 rows, 47650 cols, 125768 nonzeros 0s
-Dependent equations search running on 17345 equations with time limit of 1000.00s
-Dependent equations search removed 0 rows and 0 nonzeros in 0.01s (limit = 1000.00s)
-47646 rows, 47475 cols, 125418 nonzeros 0s
-Presolve reductions: rows 47646(-83758); columns 47475(-13849); nonzeros 125418(-97607) 
+Dependent equations search running on 10389 equations with time limit of 1000.00s
+Dependent equations search removed 0 rows and 0 nonzeros in 0.02s (limit = 1000.00s)
+40690 rows, 40519 cols, 123275 nonzeros 0s
+Presolve reductions: rows 40690(-90714); columns 40519(-20805); nonzeros 123275(-99750) 
 Solving the presolved LP
 Using dual simplex solver
   Iteration        Objective     Infeasibilities num(sum)
-          0     0.0000000000e+00 Ph1: 0(0) 0.4s
-      19982     1.8149312796e+10 Pr: 8679(3.4975e+08) 5.5s
-      27666     1.8149313704e+10 Pr: 885(122703); Du: 0(8.64267e-07) 10.5s
-      28474     1.8149265254e+10 Pr: 0(0) 12.0s
-      28474     1.8149265254e+10 Pr: 0(0) 12.0s
+          0     0.0000000000e+00 Ph1: 0(0) 0.6s
+       8807     3.3809639967e+10 Pr: 0(0) 0.8s
 
 Performed postsolve
 Solving the original LP from the solution after postsolve
 
-Model name          : linopy-problem-oeyvfhif
+Model name          : linopy-problem-a_4ancxo
 Model status        : Optimal
-Simplex   iterations: 28474
-Objective value     :  1.8149265254e+10
-P-D objective error :  2.1743603754e-13
-HiGHS run time      :         12.16
+Simplex   iterations: 8807
+Objective value     :  3.3809639967e+10
+P-D objective error :  1.8938295014e-13
+HiGHS run time      :          0.96
 INFO:linopy.constants: Optimization successful: 
 Status: ok
 Termination condition: optimal
 Solution: 61324 primals, 131404 duals
-Objective: 1.81e+10
+Objective: 3.38e+10
 Solver model: available
 Solver message: Optimal
 
 INFO:pypsa.optimization.optimize:The shadow-prices of the constraints Generator-fix-p-lower, Generator-fix-p-upper, Generator-ext-p-lower, Generator-ext-p-upper, Link-ext-p-lower, Link-ext-p-upper, Store-ext-e-lower, Store-ext-e-upper, Store-energy_balance were not assigned to the network.
-INFO:pypsa.network.io:Exported network 'Unnamed Network' saved to '/home/jon/git/h2-btc/results/network_solved.nc contains: links, generators, buses, carriers, loads, stores, sub_networks
+INFO:pypsa.network.io:Exported network 'Unnamed Network' saved to '/home/jon/git/h2-btc/results/network_solved.nc contains: buses, generators, carriers, loads, sub_networks, links, stores
 Optimization finished
 Status: ok
 Condition: optimal

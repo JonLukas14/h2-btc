@@ -1,14 +1,8 @@
-scenario_name: base_case
+scenario_name: base_h2_btc_costs2030_weather2025
 
 system:
   snapshots: 8760
-  year: 2045
-
-demand:
-  electricity_mw: 100
-  hydrogen_mw: 20
-  use_hourly_electricity_profile: true
-  use_hourly_hydrogen_profile: false
+  year: 2025
 
 costs:
   active_dataset: "costs_2030"
@@ -18,18 +12,22 @@ costs:
     costs_conservative: "technology-data/outputs/costs_conservative.csv"
   discount_rate: 0.07
 
-data_files:
-  solar_cf: data/kz_solar_cf.csv
-  wind_cf: data/kz_wind_cf.csv
-  electricity_demand: data/kz_electricity_demand.csv
-  hydrogen_demand: data/kz_hydrogen_demand.csv
-
-technology:
-  load_shedding_marginal_cost: 5000
+demand:
+  electricity_mw: 100
+  hydrogen_mw: 0
+  use_hourly_electricity_profile: true
+  use_hourly_hydrogen_profile: false
 
 hydrogen:
-  electrolyzer_efficiency: 0.7
+  enabled: true
+  mode: flexible_sink
+  electrolyzer_efficiency: 0.70
+  electrolyzer_variable_cost_eur_per_mwh: 0.0
   cyclic_storage: true
+  storage_standing_loss: 0.0
+
+technology:
+  load_shedding_marginal_cost: 10000
 
 mining:
   enabled: true

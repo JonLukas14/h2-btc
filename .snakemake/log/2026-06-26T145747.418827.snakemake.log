@@ -1,0 +1,64 @@
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 1 (use --cores to define parallelism)
+Rules claiming more threads will be scaled down.
+Job stats:
+job                count
+---------------  -------
+all                    1
+analyze_results        1
+run_model              1
+total                  3
+
+Select jobs to execute...
+
+[Fri Jun 26 14:57:48 2026]
+rule run_model:
+    input: data/processed_inputs.done, configs/scenario.yaml
+    output: results/network_solved.nc
+    log: results/logs/run_model.log
+    jobid: 2
+    reason: Missing output files: results/network_solved.nc; Updated input files: configs/scenario.yaml
+    resources: tmpdir=/tmp
+
+
+        mkdir -p results/logs results
+        python scripts/run_model.py > results/logs/run_model.log 2>&1
+        test -f results/network_solved.nc
+        
+[Fri Jun 26 14:57:56 2026]
+Finished job 2.
+1 of 3 steps (33%) done
+Select jobs to execute...
+
+[Fri Jun 26 14:57:56 2026]
+rule analyze_results:
+    input: results/network_solved.nc, configs/scenario.yaml
+    output: results/summary.csv
+    log: results/logs/analyze_results.log
+    jobid: 1
+    reason: Input files updated by another job: results/network_solved.nc
+    resources: tmpdir=/tmp
+
+
+        mkdir -p results/logs results
+        python scripts/analyze_results.py > results/logs/analyze_results.log 2>&1
+        test -f results/summary.csv
+        
+[Fri Jun 26 14:57:59 2026]
+Error in rule analyze_results:
+    jobid: 1
+    input: results/network_solved.nc, configs/scenario.yaml
+    output: results/summary.csv
+    log: results/logs/analyze_results.log (check log file(s) for error details)
+    shell:
+        
+        mkdir -p results/logs results
+        python scripts/analyze_results.py > results/logs/analyze_results.log 2>&1
+        test -f results/summary.csv
+        
+        (one of the commands exited with non-zero exit code; note that snakemake uses bash strict mode!)
+
+Shutting down, this might take some time.
+Exiting because a job execution failed. Look above for error message
+Complete log: .snakemake/log/2026-06-26T145747.418827.snakemake.log

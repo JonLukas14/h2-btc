@@ -2,15 +2,15 @@ INFO:pypsa.network.io:New version 1.2.3 available! (Current: 1.2.0)
 INFO:pypsa.network.io:Imported network 'Unnamed Network' has buses, carriers, generators, links, loads, stores, sub_networks
 INFO:choreographer.browsers.chromium:Chromium init'ed with kwargs {}
 INFO:choreographer.browsers.chromium:Found chromium path: /home/jon/.local/share/choreographer/deps/chrome-linux64/chrome
-INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmpeiey0h82.
+INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmp3yiicvpo.
 INFO:choreographer.browser_async:Opening browser.
-INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmp4vp_fujl.
-INFO:choreographer.browsers.chromium:Temporary directory at: /tmp/tmp4vp_fujl
-INFO:kaleido.kaleido:Conforming 1 to file:///tmp/tmpeiey0h82/index.html
+INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmplk3k466u.
+INFO:choreographer.browsers.chromium:Temporary directory at: /tmp/tmplk3k466u
+INFO:kaleido.kaleido:Conforming 1 to file:///tmp/tmp3yiicvpo/index.html
 INFO:kaleido.kaleido:Getting tab from queue (has 1)
-INFO:kaleido.kaleido:Got 316A
-INFO:kaleido.kaleido:Reloading tab 316A before return.
-INFO:kaleido.kaleido:Putting tab 316A back (queue size: 0).
+INFO:kaleido.kaleido:Got 2762
+INFO:kaleido.kaleido:Reloading tab 2762 before return.
+INFO:kaleido.kaleido:Putting tab 2762 back (queue size: 0).
 INFO:kaleido.kaleido:Waiting for all cleanups to finish.
 INFO:kaleido.kaleido:Exiting Kaleido.
 INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
@@ -25,17 +25,19 @@ INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
 INFO:choreographer.utils._tmpfile:shutil.rmtree worked.
 INFO:kaleido.kaleido:Cancelling tasks.
 INFO:kaleido.kaleido:Exiting Kaleido/Choreo.
+INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
+INFO:choreographer.utils._tmpfile:shutil.rmtree worked.
 INFO:choreographer.browsers.chromium:Chromium init'ed with kwargs {}
 INFO:choreographer.browsers.chromium:Found chromium path: /home/jon/.local/share/choreographer/deps/chrome-linux64/chrome
-INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmp6xsew33c.
+INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmpt3v_5mpl.
 INFO:choreographer.browser_async:Opening browser.
-INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmpz7piodri.
-INFO:choreographer.browsers.chromium:Temporary directory at: /tmp/tmpz7piodri
-INFO:kaleido.kaleido:Conforming 1 to file:///tmp/tmp6xsew33c/index.html
+INFO:choreographer.utils._tmpfile:Temp directory created: /tmp/tmp5if_fh5m.
+INFO:choreographer.browsers.chromium:Temporary directory at: /tmp/tmp5if_fh5m
+INFO:kaleido.kaleido:Conforming 1 to file:///tmp/tmpt3v_5mpl/index.html
 INFO:kaleido.kaleido:Getting tab from queue (has 1)
-INFO:kaleido.kaleido:Got DA11
-INFO:kaleido.kaleido:Reloading tab DA11 before return.
-INFO:kaleido.kaleido:Putting tab DA11 back (queue size: 0).
+INFO:kaleido.kaleido:Got 891B
+INFO:kaleido.kaleido:Reloading tab 891B before return.
+INFO:kaleido.kaleido:Putting tab 891B back (queue size: 0).
 INFO:kaleido.kaleido:Waiting for all cleanups to finish.
 INFO:kaleido.kaleido:Exiting Kaleido.
 INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
@@ -50,12 +52,18 @@ INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
 INFO:choreographer.utils._tmpfile:shutil.rmtree worked.
 INFO:kaleido.kaleido:Cancelling tasks.
 INFO:kaleido.kaleido:Exiting Kaleido/Choreo.
-INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
-INFO:choreographer.utils._tmpfile:shutil.rmtree worked.
 INFO:choreographer.utils._tmpfile:TemporaryDirectory.cleanup() worked.
 INFO:choreographer.utils._tmpfile:shutil.rmtree worked.
 === SCENARIO FILE ===
 scenario.yaml
+=== HYDROGEN SETTINGS ===
+enabled: true
+mode: flexible_sink
+electrolyzer_efficiency: 0.7
+electrolyzer_variable_cost_eur_per_mwh: 0.0
+cyclic_storage: true
+storage_standing_loss: 0.0
+
 === MINING SETTINGS ===
 enabled: true
 max_capacity_mw: 200
@@ -66,78 +74,81 @@ other_opex_eur_per_mwh: 0.0
 
 
 === MINING RESULTS ===
-  Total electricity consumed by mining : 1,688,600.0 MWh
-  Mining utilization rate              : 96.4%
-  Hours at full capacity               : 8443
-  Hours at zero                        : 317
+  Total electricity consumed by mining : 1,692,995.1 MWh
+  Mining utilization rate              : 96.6%
+  Hours at full capacity               : 8464
+  Hours at zero                        : 294
 === SUMMARY ===
-                                               0
-scenario_file                      scenario.yaml
-scenario_name                          base_case
-objective                     18149265254.477486
-total_capex                     2234630093.25218
-total_opex                     15914635161.23597
-system_cost                   18149265254.488152
-solar_generation_mwh             51441602.522432
-wind_generation_mwh              50373831.211696
-load_shedding_mwh                 3253251.980157
-electricity_demand_mwh               103129800.0
-hydrogen_demand_mwh                     175200.0
-electrolyzer_input_mwh             250285.714286
-hydrogen_output_mwh                     175200.0
-simple_lcoe_per_mwh                   178.256523
-simple_cost_per_hydrogen_mwh       103591.696658
-mining_consumption_mwh                 1688600.0
-mining_utilization_rate                 0.963813
-mining_max_capacity_mw                     200.0
+                                                              0
+scenario_file                                     scenario.yaml
+scenario_name                 base_h2_btc_costs2030_weather2025
+hydrogen_enabled                                           True
+hydrogen_mode                                     flexible_sink
+mining_enabled                                             True
+objective                                    33809639967.378445
+total_capex                                    3582918340.09523
+total_opex                                   30226721627.293972
+system_cost                                  33809639967.389202
+solar_generation_mwh                            51410272.870331
+wind_generation_mwh                             50354596.050167
+load_shedding_mwh                                3057926.209868
+electricity_demand_mwh                              103129800.0
+hydrogen_demand_mwh                                         0.0
+electrolyzer_input_mwh                                      0.0
+hydrogen_output_mwh                                        -0.0
+simple_lcoe_per_mwh                                  332.232924
+simple_cost_per_hydrogen_mwh                               None
+mining_consumption_mwh                           1692995.130366
+mining_utilization_rate                                0.966321
+mining_max_capacity_mw                                    200.0
 
 === GENERATORS ===
-                       carrier     p_nom_opt
-name                                        
-solar                    solar  6.760636e+06
-wind                      wind  1.785104e+07
-load_shedding    load_shedding  1.000000e+06
-bitcoin_mining  bitcoin_mining  2.000000e+02
+                            carrier     p_nom_opt
+name                                             
+solar                         solar  7.902443e+06
+wind                           wind  2.957531e+07
+load_shedding         load_shedding  1.000000e+06
+bitcoin_mining_sink  bitcoin_mining  2.000000e+02
 
 === LINKS ===
                    carrier  p_nom_opt
 name                                 
-electrolyzer  electrolyzer  29.696395
+electrolyzer  electrolyzer        0.0
 
 === STORES ===
-                           carrier   e_nom_opt
-name                                          
-hydrogen_storage  hydrogen_storage  701.840607
+                           carrier  e_nom_opt
+name                                         
+hydrogen_storage  hydrogen_storage        0.0
 
 === CAPACITY FACTORS ===
           asset  capacity_opt  total_output_or_input_mwh  capacity_factor
-0         solar  6.760636e+06               5.144160e+07         0.000869
-1          wind  1.785104e+07               5.037383e+07         0.000322
-2  electrolyzer  2.969639e+01               2.502857e+05         0.962118
+0         solar  7.902443e+06               5.141027e+07         0.000743
+1          wind  2.957531e+07               5.035460e+07         0.000194
+2  electrolyzer  0.000000e+00               0.000000e+00              NaN
 
 === CURTAILMENT ===
    asset  available_mwh    actual_mwh  curtailed_mwh  curtailment_rate
-0  solar   1.034314e+10  5.144160e+07            0.0               0.0
-1   wind   8.158213e+10  5.037383e+07            0.0               0.0
+0  solar   1.208999e+10  5.141027e+07            0.0               0.0
+1   wind   1.351640e+11  5.035460e+07            0.0               0.0
 
 === DISPATCH TIMESERIES HEAD ===
-                        solar_mw      wind_mw  ...  hydrogen_output_mw  mining_mw
-snapshot                                       ...                               
-2045-01-01 00:00:00     -0.00000  13492.59962  ...           20.787476      200.0
-2045-01-01 01:00:00     -0.00000  13492.59962  ...           20.787476      200.0
-2045-01-01 02:00:00     -0.00000  13492.59962  ...           20.787476      200.0
-2045-01-01 03:00:00  13492.59962     -0.00000  ...           20.787476      200.0
-2045-01-01 04:00:00  13492.59962     -0.00000  ...           20.787476      200.0
+                         solar_mw       wind_mw  ...  hydrogen_output_mw  mining_mw
+snapshot                                         ...                               
+2025-01-01 00:00:00     -0.000000  13462.903226  ...                -0.0      200.0
+2025-01-01 01:00:00     -0.000000  13462.903226  ...                -0.0      200.0
+2025-01-01 02:00:00     -0.000000  13462.903226  ...                -0.0      200.0
+2025-01-01 03:00:00  13462.903226     -0.000000  ...                -0.0      200.0
+2025-01-01 04:00:00  13462.903226     -0.000000  ...                -0.0      200.0
 
 [5 rows x 8 columns]
 
 === STORAGE SOC HEAD ===
                      hydrogen_storage_soc_mwh
 snapshot                                     
-2045-01-01 00:00:00                693.178368
-2045-01-01 01:00:00                693.965844
-2045-01-01 02:00:00                694.753321
-2045-01-01 03:00:00                695.540797
-2045-01-01 04:00:00                696.328273
+2025-01-01 00:00:00                       0.0
+2025-01-01 01:00:00                       0.0
+2025-01-01 02:00:00                       0.0
+2025-01-01 03:00:00                       0.0
+2025-01-01 04:00:00                       0.0
 
 CSV/HTML/PNG files written to ../results

@@ -1,0 +1,43 @@
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 1 (use --cores to define parallelism)
+Rules claiming more threads will be scaled down.
+Job stats:
+job                count
+---------------  -------
+all                    1
+analyze_results        1
+total                  2
+
+Select jobs to execute...
+
+[Fri Jun 26 15:03:13 2026]
+rule analyze_results:
+    input: results/network_solved.nc, configs/scenario.yaml
+    output: results/summary.csv
+    log: results/logs/analyze_results.log
+    jobid: 1
+    reason: Missing output files: results/summary.csv
+    resources: tmpdir=/tmp
+
+
+        mkdir -p results/logs results
+        python scripts/analyze_results.py > results/logs/analyze_results.log 2>&1
+        test -f results/summary.csv
+        
+[Fri Jun 26 15:03:26 2026]
+Finished job 1.
+1 of 2 steps (50%) done
+Select jobs to execute...
+
+[Fri Jun 26 15:03:26 2026]
+localrule all:
+    input: results/summary.csv
+    jobid: 0
+    reason: Input files updated by another job: results/summary.csv
+    resources: tmpdir=/tmp
+
+[Fri Jun 26 15:03:26 2026]
+Finished job 0.
+2 of 2 steps (100%) done
+Complete log: .snakemake/log/2026-06-26T150312.676356.snakemake.log
