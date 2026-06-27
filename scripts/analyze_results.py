@@ -1,10 +1,17 @@
 from pathlib import Path
+import argparse
 import yaml
 import pypsa
 import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", required=True)
+parser.add_argument("--network", required=True)
+parser.add_argument("--outdir", required=True)
+args = parser.parse_args()
 
 
 # -----------------------------------------------------------------------------
@@ -14,10 +21,10 @@ from plotly.subplots import make_subplots
 # CONFIG_FILE is the active scenario configuration.
 # NETWORK_FILE is the solved PyPSA network written by run_model.py.
 # OUTDIR is where all CSV, PNG, and HTML outputs will be saved.
+CONFIG_FILE = Path(args.config)
+NETWORK_FILE = Path(args.network)
+OUTDIR = Path(args.outdir)
 BASE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_FILE = BASE_DIR / "configs" / "scenario.yaml"
-NETWORK_FILE = BASE_DIR / "results" / "network_solved.nc"
-OUTDIR = BASE_DIR / "results"
 
 
 # -----------------------------------------------------------------------------
@@ -151,16 +158,41 @@ hydrogen_output = float(-link_p1.get("electrolyzer", 0.0))
 
 
 # -----------------------------------------------------------------------------
-# 10. Calculate simple headline indicators
+# 10b. Additional off-grid KPIs
 # -----------------------------------------------------------------------------
-# Total renewable generation is used for a rough LCOE-style indicator.
-total_renewable_generation = solar_generation + wind_generation
+# These KPIs help interpret reliability and storage behavior in an off-grid system.
+# They belong in the scenario-level summary because they are single-run indicators,
+# not hourly time-series outputs.
 
-# Simple total-system-cost per renewable MWh.
-simple_lcoe = system_cost / total_renewable_generation if total_renewable_generation > 0 else None
+# Share of annual electricity demand that had to be covered by load shedding.
+# This is a direct reliability indicator: lower is better.
+load_shedding_share = (
+    load_shedding_generation / electricity_demand_total
+    if electricity_demand_total > 0 else None
+)
 
-# Simple total-system-cost per hydrogen MWh produced.
-simple_cost_per_h2 = system_cost / hydrogen_output if hydrogen_output > 0 else None
+# Fraction of available renewable energy that was actually used.
+# Here we subtract curtailed renewable energy from total renewable generation.
+# This helps show how much solar/wind output was absorbed by the system.
+renewable_share_used = (
+    (solar_generation + wind_generation - curtailment["curtailed_mwh"].sum()) / total_renewable_generation
+    if total_renewable_generation > 0 else None
+)
+
+# Optimized hydrogen storage energy capacity, if storage exists in the network.
+# This is needed to form a rough storage-cycle indicator.
+storage_e_nom_opt = (
+    float(stores.loc["hydrogen_storage", "e_nom_opt"])
+    if "hydrogen_storage" in stores.index else None
+)
+
+# Approximate number of hydrogen storage cycles over the year.
+# This is a rough throughput-based indicator:
+# annual hydrogen output divided by storage energy capacity.
+storage_cycles_approx = (
+    hydrogen_output / storage_e_nom_opt
+    if storage_e_nom_opt and storage_e_nom_opt > 0 else None
+)
 
 
 # -----------------------------------------------------------------------------
@@ -190,6 +222,9 @@ summary = pd.DataFrame(
         "mining_consumption_mwh": [mining_consumption_mwh],
         "mining_utilization_rate": [mining_utilization_rate],
         "mining_max_capacity_mw": [mining_max_mw if mining_enabled else 0.0],
+        "load_shedding_share": [load_shedding_share],
+        "renewable_share_used": [renewable_share_used],
+        "storage_cycles_approx": [storage_cycles_approx],
     }
 )
 
