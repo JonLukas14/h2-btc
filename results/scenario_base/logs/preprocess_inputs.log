@@ -1,0 +1,112 @@
+
+Base dir : /home/jon/git/h2-btc
+KZ repo  : /home/jon/git/pypsa-kz-data  (exists: True)
+Tech repo: /home/jon/git/h2-btc/technology-data  (exists: True)
+Data dir : data/scenario_base
+Year=2025, Snapshots=8760
+
+── 1. Costs ────────────────────────────────────────────────────────
+  Technologies in costs file matching solar/wind/electrolysis/hydrogen:
+    Alkaline electrolyzer large size
+    Alkaline electrolyzer medium size
+    Alkaline electrolyzer small size
+    Hydrogen fuel cell (passenger cars)
+    Hydrogen fuel cell (trucks)
+    Hydrogen-charger
+    Hydrogen-discharger
+    Hydrogen-store
+    LOHC dehydrogenation
+    LOHC dehydrogenation (small scale)
+    LOHC hydrogenation
+    PEM electrolyzer small size
+    biogas plus hydrogen
+    central hydrogen CHP
+    central solar thermal
+    decentral solar thermal
+    digestible biomass to hydrogen
+    electrobiofuels
+    electrolysis
+    electrolysis small
+    hydrogen direct iron reduction furnace
+    hydrogen storage compressor
+    hydrogen storage tank type 1
+    hydrogen storage tank type 1 including compressor
+    hydrogen storage underground
+    offwind
+    offwind-ac-connection-submarine
+    offwind-ac-connection-underground
+    offwind-ac-station
+    offwind-dc-connection-submarine
+    offwind-dc-connection-underground
+    offwind-dc-station
+    offwind-float
+    offwind-float-connection-submarine
+    offwind-float-connection-underground
+    offwind-float-station
+    onwind
+    solar
+    solar-rooftop
+    solar-rooftop commercial
+    solar-rooftop residential
+    solar-utility
+    solar-utility single-axis tracking
+    solid biomass to hydrogen
+
+  Using active cost dataset: costs_2030
+  Source file: /home/jon/git/h2-btc/technology-data/outputs/costs_2030.csv
+
+  Matched rows:
+                  technology  parameter     value     unit
+                electrolysis        FOM    4.0000   %/year
+                electrolysis efficiency    0.6217 per unit
+                electrolysis investment 1886.0019 EUR/kW_e
+                electrolysis   lifetime   25.0000    years
+hydrogen storage underground        FOM    0.0000   %/year
+hydrogen storage underground        VOM    0.0000  EUR/MWh
+hydrogen storage underground investment    2.6741  EUR/kWh
+hydrogen storage underground   lifetime  100.0000    years
+                      onwind        FOM    1.2167   %/year
+                      onwind        VOM    1.8033  EUR/MWh
+                      onwind investment 1383.3059   EUR/kW
+                      onwind   lifetime   30.0000    years
+               solar-utility        FOM    2.4757   %/year
+               solar-utility investment  482.4785 EUR/kW_e
+               solar-utility   lifetime   40.0000    years
+
+  ✓ costs written → data/scenario_base/costs_2030.csv  (15 rows)
+
+── 2. Electricity demand ───────────────────────────────────────────
+  Demand file columns: ['year', 'month', 'demand_gegis', 'demand_korem']
+  Years available: [np.int64(2011), np.int64(2013), np.int64(2018)]
+  Using year: 2018  (most recent in file)
+ month  demand_korem
+     1        9867.6
+     2        8833.3
+     3        9062.4
+     4        8105.1
+     5        7956.0
+     6        7606.8
+     7        8150.9
+     8        7882.1
+     9        7743.3
+    10        8663.0
+    11        9262.9
+    12        9996.4
+
+  Hourly MW — min: 10565.0, mean: 11772.8, max: 13436.0
+  ✓ electricity demand written → data/scenario_base/kz_electricity_demand.csv  (rows=8760, mean=11772.8 MW)
+
+── 3. Solar CF ─────────────────────────────────────────────────────
+  Fetching solar CF from PVGIS (lat=43.3, lon=71.4) ...
+  mean CF=0.175, peak CF=0.914
+  ✓ solar CF written → data/scenario_base/kz_solar_cf.csv  (PVGIS ERA5)
+
+── 4. Wind CF ──────────────────────────────────────────────────────
+  Fetching wind data from PVGIS (lat=43.6, lon=51.2) ...
+  mean CF=0.522, peak CF=1.000
+  ✓ wind CF written → data/scenario_base/kz_wind_cf.csv  (PVGIS ERA5, hub height corrected)
+
+── 5. Hydrogen demand ──────────────────────────────────────────────
+  ✓ hydrogen demand written → data/scenario_base/kz_hydrogen_demand.csv  (all zeros; flexible_sink mode)
+
+✓ Done. All processed inputs written successfully.

@@ -16,7 +16,7 @@ demand:
   electricity_mw: 100
   hydrogen_mw: 0
   use_hourly_electricity_profile: true
-  use_hourly_hydrogen_profile: true
+  use_hourly_hydrogen_profile: false
 
 hydrogen:
   enabled: true

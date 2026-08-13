@@ -1,0 +1,16 @@
+technology,parameter,value
+electrolysis,FOM,4.0
+electrolysis,efficiency,0.6217
+electrolysis,investment,1886.0019
+electrolysis,lifetime,25.0
+hydrogen storage underground,FOM,0.0
+hydrogen storage underground,VOM,0.0
+hydrogen storage underground,investment,2.6741
+hydrogen storage underground,lifetime,100.0
+onwind,FOM,1.2167
+onwind,VOM,1.8033
+onwind,investment,1383.3059
+onwind,lifetime,30.0
+solar-utility,FOM,2.4757
+solar-utility,investment,482.4785
+solar-utility,lifetime,40.0

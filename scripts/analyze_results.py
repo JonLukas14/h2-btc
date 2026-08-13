@@ -7,28 +7,42 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--config", required=True)
-parser.add_argument("--network", required=True)
-parser.add_argument("--outdir", required=True)
+
+# -----------------------------------------------------------------------------
+# 1. Parse command-line arguments
+# -----------------------------------------------------------------------------
+# This makes the script reusable for different scenarios and output folders.
+# Example usage:
+# python scripts/analyze_results.py \
+#   --config configs/scenarios/scenario_base.yaml \
+#   --network results/scenario_base/network_solved.nc \
+#   --outdir results/scenario_base
+parser = argparse.ArgumentParser(description="Analyze solved PyPSA scenario results.")
+parser.add_argument("--config", required=True, help="Path to scenario YAML file")
+parser.add_argument("--network", required=True, help="Path to solved network NetCDF file")
+parser.add_argument("--outdir", required=True, help="Directory for analysis outputs")
 args = parser.parse_args()
 
 
 # -----------------------------------------------------------------------------
-# 1. Define important file paths
+# 2. Define important file paths
 # -----------------------------------------------------------------------------
-# BASE_DIR points to the project root folder.
-# CONFIG_FILE is the active scenario configuration.
-# NETWORK_FILE is the solved PyPSA network written by run_model.py.
-# OUTDIR is where all CSV, PNG, and HTML outputs will be saved.
+# BASE_DIR points to the project root.
+# CONFIG_FILE is the scenario configuration passed from Snakemake.
+# NETWORK_FILE is the solved PyPSA network for this scenario.
+# OUTDIR is where all CSV, PNG, and HTML outputs will be written.
+BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_FILE = Path(args.config)
 NETWORK_FILE = Path(args.network)
 OUTDIR = Path(args.outdir)
-BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+# Make sure the output folder exists before writing files.
+OUTDIR.mkdir(parents=True, exist_ok=True)
 
 
 # -----------------------------------------------------------------------------
-# 2. Load scenario configuration from YAML
+# 3. Load scenario configuration from YAML
 # -----------------------------------------------------------------------------
 # Read the scenario settings so this script knows which case was run.
 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -40,14 +54,11 @@ missing = [k for k in required if k not in cfg]
 if missing:
     raise KeyError(f"Missing top-level keys: {missing}")
 
-# Make sure the output folder exists.
-OUTDIR.mkdir(exist_ok=True)
-
 
 # -----------------------------------------------------------------------------
-# 3. Print scenario settings for debugging and traceability
+# 4. Print scenario settings for debugging and traceability
 # -----------------------------------------------------------------------------
-# These prints help you confirm which scenario was used and which settings were active.
+# These prints help confirm which scenario was used and which settings were active.
 print("=== SCENARIO FILE ===")
 print(CONFIG_FILE.name)
 
@@ -59,15 +70,15 @@ print(yaml.dump(cfg.get("mining", {}), sort_keys=False))
 
 
 # -----------------------------------------------------------------------------
-# 4. Load the solved PyPSA network
+# 5. Load the solved PyPSA network
 # -----------------------------------------------------------------------------
-# Create an empty PyPSA network object, then import the solved network from netCDF.
+# Create an empty PyPSA network object, then import the solved network from NetCDF.
 n = pypsa.Network()
 n.import_from_netcdf(NETWORK_FILE)
 
 
 # -----------------------------------------------------------------------------
-# 5. Read important scenario switches from the config
+# 6. Read important scenario switches from the config
 # -----------------------------------------------------------------------------
 # These flags help the script interpret whether hydrogen and mining are active.
 hydrogen_cfg = cfg.get("hydrogen", {})
@@ -82,7 +93,7 @@ mining_asset_name = "bitcoin_mining_sink"
 
 
 # -----------------------------------------------------------------------------
-# 6. Calculate whole-system cost metrics
+# 7. Calculate whole-system cost metrics
 # -----------------------------------------------------------------------------
 # CAPEX = investment costs, OPEX = operational costs, system_cost = total.
 total_capex = float(n.statistics.capex().sum())
@@ -91,13 +102,13 @@ system_cost = total_capex + total_opex
 
 
 # -----------------------------------------------------------------------------
-# 7. Aggregate key energy flows over the whole model year
+# 8. Aggregate key energy flows over the whole model year
 # -----------------------------------------------------------------------------
 # Sum generator output, load consumption, and link flows across all snapshots.
 generator_dispatch = n.generators_t.p.sum()
 load_totals = n.loads_t.p.sum()
-link_p0 = n.links_t.p0.sum()
-link_p1 = n.links_t.p1.sum()
+link_p0 = n.links_t.p0.sum() if not n.links.empty else pd.Series(dtype=float)
+link_p1 = n.links_t.p1.sum() if not n.links.empty else pd.Series(dtype=float)
 
 # Extract total energy generated by the main assets.
 solar_generation = float(generator_dispatch.get("solar", 0.0))
@@ -106,14 +117,14 @@ load_shedding_generation = float(generator_dispatch.get("load_shedding", 0.0))
 
 
 # -----------------------------------------------------------------------------
-# 8. Calculate mining-specific metrics if mining is enabled
+# 9. Calculate mining-specific metrics if mining is enabled
 # -----------------------------------------------------------------------------
 # Initialize mining outputs with safe defaults in case mining is disabled.
 mining_consumption_mwh = 0.0
 mining_utilization_rate = None
 mining_max_mw = float(mining_cfg.get("max_capacity_mw", 0.0))
 
-# Only compute mining metrics if mining is enabled AND the component exists.
+# Only compute mining metrics if mining is enabled and the component exists.
 if mining_enabled and mining_asset_name in n.generators.index:
     # Mining is modeled as a negative-sign generator, so take absolute value
     # to express electricity consumed by mining in positive MW.
@@ -144,7 +155,7 @@ if mining_enabled and mining_asset_name in n.generators.index:
 
 
 # -----------------------------------------------------------------------------
-# 9. Calculate total demand and conversion outputs
+# 10. Calculate total demand and conversion outputs
 # -----------------------------------------------------------------------------
 # Total annual electricity and hydrogen demand served.
 electricity_demand_total = float(load_totals.get("electricity_demand", 0.0))
@@ -152,85 +163,13 @@ hydrogen_demand_total = float(load_totals.get("hydrogen_demand", 0.0))
 
 # For the electrolyzer link:
 # p0 is electricity input to the link,
-# p1 is hydrogen output from the link (negative sign in PyPSA convention here).
+# p1 is hydrogen output from the link (negative sign in this convention).
 electrolyzer_input = float(link_p0.get("electrolyzer", 0.0))
 hydrogen_output = float(-link_p1.get("electrolyzer", 0.0))
 
 
 # -----------------------------------------------------------------------------
-# 10b. Additional off-grid KPIs
-# -----------------------------------------------------------------------------
-# These KPIs help interpret reliability and storage behavior in an off-grid system.
-# They belong in the scenario-level summary because they are single-run indicators,
-# not hourly time-series outputs.
-
-# Share of annual electricity demand that had to be covered by load shedding.
-# This is a direct reliability indicator: lower is better.
-load_shedding_share = (
-    load_shedding_generation / electricity_demand_total
-    if electricity_demand_total > 0 else None
-)
-
-# Fraction of available renewable energy that was actually used.
-# Here we subtract curtailed renewable energy from total renewable generation.
-# This helps show how much solar/wind output was absorbed by the system.
-renewable_share_used = (
-    (solar_generation + wind_generation - curtailment["curtailed_mwh"].sum()) / total_renewable_generation
-    if total_renewable_generation > 0 else None
-)
-
-# Optimized hydrogen storage energy capacity, if storage exists in the network.
-# This is needed to form a rough storage-cycle indicator.
-storage_e_nom_opt = (
-    float(stores.loc["hydrogen_storage", "e_nom_opt"])
-    if "hydrogen_storage" in stores.index else None
-)
-
-# Approximate number of hydrogen storage cycles over the year.
-# This is a rough throughput-based indicator:
-# annual hydrogen output divided by storage energy capacity.
-storage_cycles_approx = (
-    hydrogen_output / storage_e_nom_opt
-    if storage_e_nom_opt and storage_e_nom_opt > 0 else None
-)
-
-
-# -----------------------------------------------------------------------------
-# 11. Build one-row summary table for the scenario
-# -----------------------------------------------------------------------------
-# This table is the most compact overview of the run.
-summary = pd.DataFrame(
-    {
-        "scenario_file": [CONFIG_FILE.name],
-        "scenario_name": [cfg["scenario_name"]],
-        "hydrogen_enabled": [hydrogen_enabled],
-        "hydrogen_mode": [hydrogen_mode],
-        "mining_enabled": [mining_enabled],
-        "objective": [n.objective],
-        "total_capex": [total_capex],
-        "total_opex": [total_opex],
-        "system_cost": [system_cost],
-        "solar_generation_mwh": [solar_generation],
-        "wind_generation_mwh": [wind_generation],
-        "load_shedding_mwh": [load_shedding_generation],
-        "electricity_demand_mwh": [electricity_demand_total],
-        "hydrogen_demand_mwh": [hydrogen_demand_total],
-        "electrolyzer_input_mwh": [electrolyzer_input],
-        "hydrogen_output_mwh": [hydrogen_output],
-        "simple_lcoe_per_mwh": [simple_lcoe],
-        "simple_cost_per_hydrogen_mwh": [simple_cost_per_h2],
-        "mining_consumption_mwh": [mining_consumption_mwh],
-        "mining_utilization_rate": [mining_utilization_rate],
-        "mining_max_capacity_mw": [mining_max_mw if mining_enabled else 0.0],
-        "load_shedding_share": [load_shedding_share],
-        "renewable_share_used": [renewable_share_used],
-        "storage_cycles_approx": [storage_cycles_approx],
-    }
-)
-
-
-# -----------------------------------------------------------------------------
-# 12. Export optimized capacities by component type
+# 11. Export optimized capacities by component type
 # -----------------------------------------------------------------------------
 # These tables store final installed capacities after optimization.
 generators = n.generators[["carrier", "p_nom_opt"]].copy()
@@ -239,7 +178,77 @@ stores = n.stores[["carrier", "e_nom_opt"]].copy()
 
 
 # -----------------------------------------------------------------------------
-# 13. Build hourly dispatch time series table
+# 12. Calculate simple headline indicators
+# -----------------------------------------------------------------------------
+# Total renewable generation is used for rough system indicators.
+total_renewable_generation = solar_generation + wind_generation
+
+# Simple total-system-cost per renewable MWh.
+simple_lcoe = system_cost / total_renewable_generation if total_renewable_generation > 0 else None
+
+# Simple total-system-cost per hydrogen MWh produced.
+simple_cost_per_h2 = system_cost / hydrogen_output if hydrogen_output > 0 else None
+
+
+# -----------------------------------------------------------------------------
+# 13. Calculate curtailment
+# -----------------------------------------------------------------------------
+# Try to get curtailment directly from PyPSA statistics.
+# If that fails, fall back to a simple zero-filled table.
+try:
+    curtailment_stats = n.statistics.curtailment(
+        comps=["Generator"],
+        aggregate_across_components=False,
+        groupby="name",
+    )
+    curtailment_stats = curtailment_stats.reset_index()
+
+    if curtailment_stats.shape[1] >= 2:
+        curtailment_stats.columns = ["asset", "curtailed_mwh"] + list(curtailment_stats.columns[2:])
+        curtailment_stats = curtailment_stats[["asset", "curtailed_mwh"]]
+    else:
+        curtailment_stats = pd.DataFrame({"asset": ["solar", "wind"], "curtailed_mwh": [0.0, 0.0]})
+except Exception:
+    curtailment_stats = pd.DataFrame({"asset": ["solar", "wind"], "curtailed_mwh": [0.0, 0.0]})
+
+# Compute total available renewable energy from capacity factor profiles.
+available_energy = pd.DataFrame(
+    {
+        "asset": ["solar", "wind"],
+        "available_mwh": [
+            float((n.generators_t.p_max_pu["solar"] * generators.loc["solar", "p_nom_opt"]).sum())
+            if "solar" in n.generators_t.p_max_pu.columns and "solar" in generators.index else 0.0,
+            float((n.generators_t.p_max_pu["wind"] * generators.loc["wind", "p_nom_opt"]).sum())
+            if "wind" in n.generators_t.p_max_pu.columns and "wind" in generators.index else 0.0,
+        ],
+        "actual_mwh": [solar_generation, wind_generation],
+    }
+)
+
+# Merge available energy with curtailment and calculate curtailment rates.
+curtailment = available_energy.merge(curtailment_stats, on="asset", how="left")
+curtailment["curtailed_mwh"] = curtailment["curtailed_mwh"].fillna(
+    curtailment["available_mwh"] - curtailment["actual_mwh"]
+)
+curtailment["curtailment_rate"] = curtailment["curtailed_mwh"] / curtailment["available_mwh"]
+curtailment["curtailment_rate"] = curtailment["curtailment_rate"].fillna(0.0)
+
+
+# -----------------------------------------------------------------------------
+# 14. Extract hydrogen storage state of charge
+# -----------------------------------------------------------------------------
+# If hydrogen storage exists, read its stored energy over time.
+# Otherwise create a zero series to keep the script robust.
+if hasattr(n.stores_t, "e") and "hydrogen_storage" in n.stores_t.e.columns:
+    storage_soc = n.stores_t.e["hydrogen_storage"].copy()
+else:
+    storage_soc = pd.Series(0.0, index=n.snapshots, name="hydrogen_storage_soc_mwh")
+
+storage_timeseries = pd.DataFrame({"hydrogen_storage_soc_mwh": storage_soc}, index=n.snapshots)
+
+
+# -----------------------------------------------------------------------------
+# 15. Build hourly dispatch time series table
 # -----------------------------------------------------------------------------
 # This table is useful for plotting and for checking hourly system behavior.
 dispatch_timeseries = pd.DataFrame(index=n.snapshots)
@@ -248,8 +257,8 @@ dispatch_timeseries["wind_mw"] = n.generators_t.p.get("wind", pd.Series(0.0, ind
 dispatch_timeseries["load_shedding_mw"] = n.generators_t.p.get("load_shedding", pd.Series(0.0, index=n.snapshots))
 dispatch_timeseries["electricity_demand_mw"] = n.loads_t.p.get("electricity_demand", pd.Series(0.0, index=n.snapshots))
 dispatch_timeseries["hydrogen_demand_mw"] = n.loads_t.p.get("hydrogen_demand", pd.Series(0.0, index=n.snapshots))
-dispatch_timeseries["electrolyzer_input_mw"] = n.links_t.p0.get("electrolyzer", pd.Series(0.0, index=n.snapshots))
-dispatch_timeseries["hydrogen_output_mw"] = -n.links_t.p1.get("electrolyzer", pd.Series(0.0, index=n.snapshots))
+dispatch_timeseries["electrolyzer_input_mw"] = n.links_t.p0.get("electrolyzer", pd.Series(0.0, index=n.snapshots)) if not n.links.empty else 0.0
+dispatch_timeseries["hydrogen_output_mw"] = -n.links_t.p1.get("electrolyzer", pd.Series(0.0, index=n.snapshots)) if not n.links.empty else 0.0
 dispatch_timeseries["mining_mw"] = (
     n.generators_t.p.get(mining_asset_name, pd.Series(0.0, index=n.snapshots)).abs()
     if mining_enabled else pd.Series(0.0, index=n.snapshots)
@@ -257,7 +266,7 @@ dispatch_timeseries["mining_mw"] = (
 
 
 # -----------------------------------------------------------------------------
-# 14. Calculate capacity factors
+# 16. Calculate capacity factors
 # -----------------------------------------------------------------------------
 # Capacity factor = actual yearly output / maximum possible yearly output.
 hours = len(n.snapshots)
@@ -281,61 +290,79 @@ capacity_factors = pd.DataFrame(
 
 
 # -----------------------------------------------------------------------------
-# 15. Calculate curtailment
+# 17. Additional off-grid KPIs
 # -----------------------------------------------------------------------------
-# Try to get curtailment directly from PyPSA statistics.
-# If that fails, fall back to a simple zero-filled table.
-try:
-    curtailment_stats = n.statistics.curtailment(
-        components=["Generator"],
-        aggregate_across_components=False,
-        groupby="name",
-    )
-    curtailment_stats = curtailment_stats.reset_index()
-    if "Generator" in curtailment_stats.columns:
-        curtailment_stats = curtailment_stats.drop(columns=["Generator"])
-    curtailment_stats.columns = ["asset", "curtailed_mwh"]
-except Exception:
-    curtailment_stats = pd.DataFrame({"asset": ["solar", "wind"], "curtailed_mwh": [0.0, 0.0]})
+# These KPIs help interpret reliability and storage behavior in an off-grid system.
 
-# Compute total available renewable energy from capacity factor profiles.
-available_energy = pd.DataFrame(
+# Share of annual electricity demand that had to be covered by load shedding.
+load_shedding_share = (
+    load_shedding_generation / electricity_demand_total
+    if electricity_demand_total > 0 else None
+)
+
+# Fraction of available renewable energy that was actually used.
+# potential renewable = actual renewable + curtailed renewable
+actual_renewable_generation = solar_generation + wind_generation
+curtailed_renewable_generation = float(curtailment["curtailed_mwh"].sum())
+potential_renewable_generation = (
+    actual_renewable_generation + curtailed_renewable_generation
+)
+
+renewable_share_used = (
+    actual_renewable_generation / potential_renewable_generation
+    if potential_renewable_generation > 0 else None
+)
+
+# Optimized hydrogen storage energy capacity, if storage exists.
+storage_e_nom_opt = (
+    float(stores.loc["hydrogen_storage", "e_nom_opt"])
+    if "hydrogen_storage" in stores.index else None
+)
+
+# Approximate number of storage cycles over the modeled period.
+storage_cycles_approx = (
+    hydrogen_output / storage_e_nom_opt
+    if storage_e_nom_opt and storage_e_nom_opt > 0 else None
+)
+
+
+# -----------------------------------------------------------------------------
+# 18. Build one-row summary table for the scenario
+# -----------------------------------------------------------------------------
+# This table is the most compact overview of the run.
+summary = pd.DataFrame(
     {
-        "asset": ["solar", "wind"],
-        "available_mwh": [
-            float((n.generators_t.p_max_pu["solar"] * solar_p_nom).sum()) if "solar" in n.generators_t.p_max_pu.columns else 0.0,
-            float((n.generators_t.p_max_pu["wind"] * wind_p_nom).sum()) if "wind" in n.generators_t.p_max_pu.columns else 0.0,
-        ],
-        "actual_mwh": [solar_generation, wind_generation],
+        "scenario_file": [CONFIG_FILE.name],
+        "scenario_name": [cfg["scenario_name"]],
+        "hydrogen_enabled": [hydrogen_enabled],
+        "hydrogen_mode": [hydrogen_mode],
+        "mining_enabled": [mining_enabled],
+        "objective": [n.objective],
+        "total_capex": [total_capex],
+        "total_opex": [total_opex],
+        "system_cost": [system_cost],
+        "solar_generation_mwh": [solar_generation],
+        "wind_generation_mwh": [wind_generation],
+        "load_shedding_mwh": [load_shedding_generation],
+        "load_shedding_share": [load_shedding_share],
+        "electricity_demand_mwh": [electricity_demand_total],
+        "hydrogen_demand_mwh": [hydrogen_demand_total],
+        "electrolyzer_input_mwh": [electrolyzer_input],
+        "hydrogen_output_mwh": [hydrogen_output],
+        "simple_lcoe_per_mwh": [simple_lcoe],
+        "simple_cost_per_hydrogen_mwh": [simple_cost_per_h2],
+        "renewable_share_used": [renewable_share_used],
+        "storage_cycles_approx": [storage_cycles_approx],
+        "mining_consumption_mwh": [mining_consumption_mwh],
+        "mining_utilization_rate": [mining_utilization_rate],
+        "mining_max_capacity_mw": [mining_max_mw if mining_enabled else 0.0],
     }
 )
 
-# Merge the available energy table with the curtailment table and calculate rates.
-curtailment = available_energy.merge(curtailment_stats, on="asset", how="left")
-curtailment["curtailed_mwh"] = curtailment["curtailed_mwh"].fillna(
-    curtailment["available_mwh"] - curtailment["actual_mwh"]
-)
-curtailment["curtailment_rate"] = curtailment["curtailed_mwh"] / curtailment["available_mwh"]
-curtailment["curtailment_rate"] = curtailment["curtailment_rate"].fillna(0.0)
-
 
 # -----------------------------------------------------------------------------
-# 16. Extract hydrogen storage state of charge
+# 19. Write core CSV outputs
 # -----------------------------------------------------------------------------
-# If hydrogen storage exists, read its stored energy over time.
-# Otherwise create a zero series to keep the script robust.
-if hasattr(n.stores_t, "e") and "hydrogen_storage" in n.stores_t.e.columns:
-    storage_soc = n.stores_t.e["hydrogen_storage"].copy()
-else:
-    storage_soc = pd.Series(0.0, index=n.snapshots, name="hydrogen_storage_soc_mwh")
-
-storage_timeseries = pd.DataFrame({"hydrogen_storage_soc_mwh": storage_soc}, index=n.snapshots)
-
-
-# -----------------------------------------------------------------------------
-# 17. Write core CSV outputs
-# -----------------------------------------------------------------------------
-# These files are the structured results you can reuse later.
 summary.to_csv(OUTDIR / "summary.csv", index=False)
 generators.to_csv(OUTDIR / "generators.csv")
 links.to_csv(OUTDIR / "links.csv")
@@ -351,7 +378,7 @@ storage_timeseries.to_csv(OUTDIR / "storage_timeseries.csv")
 
 
 # -----------------------------------------------------------------------------
-# 18. Prepare compact data tables for plotting
+# 20. Prepare compact data tables for plotting
 # -----------------------------------------------------------------------------
 generation_data = pd.DataFrame(
     {
@@ -379,17 +406,14 @@ load_shedding_value = capacity_data.loc[capacity_data["asset"] == "Load shedding
 
 
 # -----------------------------------------------------------------------------
-# 19. Build cost tables by technology
+# 21. Build cost tables by technology
 # -----------------------------------------------------------------------------
-# Get CAPEX and OPEX by asset name from PyPSA statistics.
 capex_raw = n.statistics.capex(groupby="name")
 opex_raw = n.statistics.opex(groupby="name")
 
-# Flatten the index if needed.
 capex_by_tech = capex_raw.droplevel(0) if capex_raw.index.nlevels > 1 else capex_raw
 opex_by_tech = opex_raw.droplevel(0) if opex_raw.index.nlevels > 1 else opex_raw
 
-# Define the assets you want to show in cost charts.
 all_assets = ["solar", "wind", "electrolyzer", "hydrogen_storage", mining_asset_name]
 _lmap = {
     "solar": "Solar",
@@ -399,7 +423,6 @@ _lmap = {
     mining_asset_name: "BTC Mining",
 }
 
-# Display labels and values converted to million EUR.
 _dl = [_lmap[a] for a in all_assets]
 _cv = [float(capex_by_tech.get(a, 0)) / 1e6 for a in all_assets]
 _ov = [float(opex_by_tech.get(a, 0)) / 1e6 for a in all_assets]
@@ -407,15 +430,14 @@ _tv = [c + o for c, o in zip(_cv, _ov)]
 
 
 # -----------------------------------------------------------------------------
-# 20. Helper functions for cost charts
+# 22. Helper functions for cost charts
 # -----------------------------------------------------------------------------
-# Format numbers for text labels in the bar charts.
 def _fmt(v):
     if v == 0:
         return ""
     return f"−{abs(v):,.0f}" if v < 0 else f"{v:,.0f}"
 
-# Generic Plotly bar-chart function to avoid repeating code.
+
 def _cost_chart(x_labels, capex_v, opex_v, total_v, title_suffix, fname):
     fig = go.Figure()
     for name, vals, color in [
@@ -437,7 +459,7 @@ def _cost_chart(x_labels, capex_v, opex_v, total_v, title_suffix, fname):
             text=(
                 f"Annualised Cost — {title_suffix}<br>"
                 f"<span style='font-size:13px;font-weight:normal;color:#666;'>"
-                f"Scenario: {cfg['scenario_name']} · 7% discount rate · Million EUR · Negative OPEX = revenue"
+                f"Scenario: {cfg['scenario_name']} · Million EUR · Negative OPEX = revenue"
                 f"</span>"
             ),
             font=dict(size=16), x=0.5, xanchor="center",
@@ -462,23 +484,20 @@ def _cost_chart(x_labels, capex_v, opex_v, total_v, title_suffix, fname):
 
 
 # -----------------------------------------------------------------------------
-# 21. Create cost charts
+# 23. Create cost charts
 # -----------------------------------------------------------------------------
-# Large assets chart.
 _big = ["Solar", "Wind"]
 _bi = [_dl.index(l) for l in _big]
 _cost_chart(_big, [_cv[i] for i in _bi], [_ov[i] for i in _bi], [_tv[i] for i in _bi], "Solar & Wind", "cost_solar_wind.png")
 
-# Smaller assets chart.
 _sm = ["Electrolyzer", "H₂ Storage", "BTC Mining"]
 _si = [_dl.index(l) for l in _sm]
 _cost_chart(_sm, [_cv[i] for i in _si], [_ov[i] for i in _si], [_tv[i] for i in _si], "Electrolyzer, H₂ Storage & BTC Mining", "cost_small_assets.png")
 
 
 # -----------------------------------------------------------------------------
-# 22. Create static PNG charts with Matplotlib
+# 24. Create static PNG charts with Matplotlib
 # -----------------------------------------------------------------------------
-# Generation mix bar chart.
 fig, ax = plt.subplots(figsize=(8, 5), dpi=160)
 bars = ax.bar(generation_data["source"], generation_data["value"], color=["#01696f", "#006494", "#a13544"])
 ax.set_title("Generation Mix", fontsize=14, weight="bold")
@@ -490,7 +509,6 @@ fig.tight_layout()
 fig.savefig(OUTDIR / "generation_mix.png", bbox_inches="tight")
 plt.close(fig)
 
-# Optimized capacities bar chart.
 fig, ax = plt.subplots(figsize=(9, 5), dpi=160)
 bars = ax.bar(
     real_capacity["asset"], real_capacity["value"],
@@ -521,7 +539,6 @@ fig.tight_layout()
 fig.savefig(OUTDIR / "optimized_capacities.png", bbox_inches="tight")
 plt.close(fig)
 
-# Hydrogen storage state-of-charge chart.
 fig, ax = plt.subplots(figsize=(8, 4), dpi=160)
 ax.plot(
     storage_timeseries.index,
@@ -542,9 +559,8 @@ plt.close(fig)
 
 
 # -----------------------------------------------------------------------------
-# 23. Create interactive Plotly HTML for hydrogen storage
+# 25. Create interactive Plotly HTML for hydrogen storage
 # -----------------------------------------------------------------------------
-# This version is useful when you want hover labels and zooming in a browser.
 fig_html = go.Figure()
 fig_html.add_trace(
     go.Scatter(
@@ -571,7 +587,7 @@ fig_html.write_html(
 
 
 # -----------------------------------------------------------------------------
-# 24. Prepare dashboard input data
+# 26. Prepare dashboard input data
 # -----------------------------------------------------------------------------
 cost_data = pd.DataFrame(
     {
@@ -582,9 +598,8 @@ cost_data = pd.DataFrame(
 
 
 # -----------------------------------------------------------------------------
-# 25. Create one HTML dashboard with multiple subplots
+# 27. Create one HTML dashboard with multiple subplots
 # -----------------------------------------------------------------------------
-# This combines the main result charts into one browser-friendly file.
 fig = make_subplots(
     rows=3, cols=2,
     subplot_titles=(
@@ -606,7 +621,6 @@ fig.add_trace(go.Scatter(x=storage_timeseries.index, y=storage_timeseries["hydro
 fig.add_trace(go.Bar(x=capacity_factors["asset"], y=capacity_factors["capacity_factor"], marker_color=["#01696f", "#006494", "#7a39bb"], name="Capacity factors"), row=3, col=1)
 fig.add_trace(go.Bar(x=curtailment["asset"], y=curtailment["curtailment_rate"], marker_color=["#01696f", "#006494"], name="Curtailment"), row=3, col=2)
 
-# Add axis labels for each subplot.
 fig.update_yaxes(title_text="EUR", row=1, col=1)
 fig.update_yaxes(title_text="MWh", row=1, col=2)
 fig.update_yaxes(title_text="MW / MWh", row=2, col=1)
@@ -614,7 +628,6 @@ fig.update_yaxes(title_text="MWh", row=2, col=2)
 fig.update_yaxes(title_text="Share", row=3, col=1)
 fig.update_yaxes(title_text="Share", row=3, col=2)
 
-# Set final dashboard styling and save it.
 fig.update_layout(
     title_text=f"Scenario Results: {cfg['scenario_name']}",
     height=1200, width=1300,
@@ -626,13 +639,13 @@ fig.write_html(OUTDIR / "results_dashboard.html", include_plotlyjs="cdn")
 
 
 # -----------------------------------------------------------------------------
-# 26. Export summary table as HTML
+# 28. Export summary table as HTML
 # -----------------------------------------------------------------------------
 summary.style.format(precision=2).to_html(OUTDIR / "summary_table.html", encoding="utf-8")
 
 
 # -----------------------------------------------------------------------------
-# 27. Print outputs to terminal/log for quick inspection
+# 29. Print outputs to terminal/log for quick inspection
 # -----------------------------------------------------------------------------
 print("=== SUMMARY ===")
 print(summary.T)
@@ -650,4 +663,4 @@ print("\n=== DISPATCH TIMESERIES HEAD ===")
 print(dispatch_timeseries.head())
 print("\n=== STORAGE SOC HEAD ===")
 print(storage_timeseries.head())
-print("\nCSV/HTML/PNG files written to ../results")
+print(f"\nCSV/HTML/PNG files written to {OUTDIR}")

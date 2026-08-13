@@ -1,0 +1,67 @@
+WARNING:pypsa.consistency:The following buses have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
+Index(['electricity_bus', 'hydrogen_bus'], dtype='str', name='name')
+WARNING:pypsa.consistency:The following generators have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
+Index(['solar', 'wind', 'load_shedding', 'hydrogen_sink',
+       'bitcoin_mining_sink'],
+      dtype='str', name='name')
+WARNING:pypsa.consistency:The following links have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
+Index(['electrolyzer'], dtype='str', name='name')
+WARNING:pypsa.consistency:The following stores have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
+Index(['hydrogen_storage'], dtype='str', name='name')
+INFO:linopy.model: Solve problem using Highs solver
+INFO:linopy.io:Writing objective.
+Mining revenue estimate: 120000.00 EUR/MWh
+Built network successfully
+Snapshots: 8760
+Data directory: data/scenario_base
+Hydrogen enabled: True
+Hydrogen mode: flexible_sink
+Mining enabled: True
+Writing constraints.:   0%|[38;2;128;191;255m          [0m| 0/13 [00:00<?, ?it/s]Writing constraints.:  38%|[38;2;128;191;255m███▊      [0m| 5/13 [00:00<00:00, 44.28it/s]Writing constraints.:  77%|[38;2;128;191;255m███████▋  [0m| 10/13 [00:00<00:00, 39.23it/s]Writing constraints.: 100%|[38;2;128;191;255m██████████[0m| 13/13 [00:00<00:00, 38.51it/s]
+Writing continuous variables.:   0%|[38;2;128;191;255m          [0m| 0/7 [00:00<?, ?it/s]Writing continuous variables.: 100%|[38;2;128;191;255m██████████[0m| 7/7 [00:00<00:00, 142.96it/s]
+INFO:linopy.io: Writing time: 0.68s
+Running HiGHS 1.14.0 (git hash: 7df0786): Copyright (c) 2026 under MIT licence terms
+LP linopy-problem-u6uexafb has 148925 rows; 70085 cols; 258066 nonzeros
+Coefficient ranges:
+  Matrix  [1e-09, 1e+00]
+  Cost    [2e-01, 1e+05]
+  Bound   [0e+00, 0e+00]
+  RHS     [2e+02, 1e+04]
+Presolving model
+47821 rows, 47825 cols, 125943 nonzeros 0s
+42793 rows, 34037 cols, 112926 nonzeros 0s
+Dependent equations search running on 10397 equations with time limit of 1000.00s
+Dependent equations search removed 0 rows and 0 nonzeros in 0.00s (limit = 1000.00s)
+40698 rows, 31942 cols, 114590 nonzeros 0s
+Presolve reductions: rows 40698(-108227); columns 31942(-38143); nonzeros 114590(-143476) 
+Solving the presolved LP
+Using dual simplex solver
+  Iteration        Objective     Infeasibilities num(sum)
+          0    -1.8948457444e+11 Pr: 8585(8.09434e+06) 0.5s
+       8795    -1.7535305649e+11 Pr: 0(0) 0.7s
+
+Performed postsolve
+Solving the original LP from the solution after postsolve
+
+Model name          : linopy-problem-u6uexafb
+Model status        : Optimal
+Simplex   iterations: 8795
+Objective value     : -1.7535305649e+11
+P-D objective error :  2.2885609203e-14
+HiGHS run time      :          0.98
+INFO:linopy.constants: Optimization successful: 
+Status: ok
+Termination condition: optimal
+Solution: 70085 primals, 148925 duals
+Objective: -1.75e+11
+Solver model: available
+Solver message: Optimal
+
+INFO:pypsa.optimization.optimize:The shadow-prices of the constraints Generator-fix-p-lower, Generator-fix-p-upper, Generator-ext-p-lower, Generator-ext-p-upper, Link-ext-p-lower, Link-ext-p-upper, Store-ext-e-lower, Store-ext-e-upper, Store-energy_balance were not assigned to the network.
+INFO:pypsa.network.io:Exported network 'Unnamed Network' saved to 'results/scenario_base/network_solved.nc contains: buses, generators, links, stores, loads, sub_networks
+Optimization finished
+Scenario file: configs/scenarios/scenario_base.yaml
+Data directory: data/scenario_base
+Status: ok
+Condition: optimal
+Saved network to: results/scenario_base/network_solved.nc

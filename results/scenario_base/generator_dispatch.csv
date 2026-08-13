@@ -1,0 +1,6 @@
+name,total_generation_mwh
+solar,51418682.477041885
+wind,50352439.339567885
+load_shedding,3110678.183390232
+hydrogen_sink,0.0
+bitcoin_mining_sink,1752000.0
