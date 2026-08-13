@@ -29,8 +29,12 @@ def build_test_network(cfg, data_dir):
     # -------------------------------------------------------------------------
     # 2. Read scenario settings
     # -------------------------------------------------------------------------
-    year = int(cfg["system"]["year"])
-    snapshots = int(cfg["system"]["snapshots"])
+    system_cfg = cfg["system"]
+
+    snapshots = int(system_cfg["snapshots"])
+    investment_year = int(system_cfg["investment_year"])
+    weather_year = int(system_cfg["weather_year"])
+    demand_year = int(system_cfg["demand_year"])
 
     # Technology switches and capacities from config.
     tech_cfg = cfg.get("technology", {})
@@ -52,12 +56,27 @@ def build_test_network(cfg, data_dir):
     solar_cf = solar_cf["solar_cf"]
     wind_cf = wind_cf["wind_cf"]
 
+    # Validate that every time series matches the configured optimization horizon.
+    time_series = {
+        "electricity_demand": electricity_demand,
+        "hydrogen_demand": hydrogen_demand,
+        "solar_cf": solar_cf,
+        "wind_cf": wind_cf,
+    }
+
+    for name, series in time_series.items():
+        if len(series) != snapshots:
+            raise ValueError(
+                f"{name} contains {len(series)} rows, "
+                f"but system.snapshots is {snapshots}."
+            )
+
     # -------------------------------------------------------------------------
     # 4. Build snapshots
     # -------------------------------------------------------------------------
     # Use an hourly DatetimeIndex for the modeled period.
     snapshot_index = pd.date_range(
-        start=f"{year}-01-01 00:00:00",
+        start=f"{weather_year}-01-01 00:00:00",
         periods=snapshots,
         freq="h",
     )
@@ -78,33 +97,105 @@ def build_test_network(cfg, data_dir):
     # 7. Helper function to extract cost values
     # -------------------------------------------------------------------------
     # This reads a single parameter value from the processed costs table.
-    def get_cost(technology, parameter, default=None):
+    def get_cost_row(technology, parameter):
         rows = costs[
             (costs["technology"] == technology) &
             (costs["parameter"] == parameter)
         ]
+
         if rows.empty:
+            return None
+
+        return rows.iloc[0]
+
+
+    def get_cost(technology, parameter, default=None):
+        row = get_cost_row(technology, parameter)
+
+        if row is None:
             if default is not None:
-                return default
-            raise KeyError(f"Missing cost entry for {technology} / {parameter}")
-        return float(rows["value"].iloc[0])
+                return float(default)
+
+            raise KeyError(
+                f"Missing cost entry for {technology} / {parameter}"
+            )
+
+        return float(row["value"])
+
+
+    def get_investment_cost_for_pypsa(technology):
+        """
+        Convert investment costs from the technology-data units to the
+        MW/MWh units used for PyPSA nominal capacities.
+        """
+        row = get_cost_row(technology, "investment")
+
+        if row is None:
+            raise KeyError(
+                f"Missing investment cost for technology '{technology}'"
+            )
+
+        value = float(row["value"])
+        unit = str(row["unit"]).strip()
+
+        # Power technologies:
+        # EUR/kW -> EUR/MW
+        #
+        # Energy storage:
+        # EUR/kWh -> EUR/MWh
+        if unit in {"EUR/kW", "EUR/kW_e", "EUR/kWh"}:
+            return value * 1000.0
+
+        # Already in PyPSA-compatible MW/MWh units.
+        if unit in {"EUR/MW", "EUR/MW_e", "EUR/MWh"}:
+            return value
+
+        raise ValueError(
+            f"Unsupported investment-cost unit '{unit}' "
+            f"for technology '{technology}'."
+        )
+
 
     def annuity(rate, lifetime):
         if lifetime <= 0:
-            raise ValueError(f"Lifetime must be positive, got {lifetime}")
+            raise ValueError(
+                f"Lifetime must be positive, got {lifetime}"
+            )
+
         if rate == 0:
             return 1.0 / lifetime
-        return rate / (1.0 - (1.0 + rate) ** (-lifetime))
+
+        return rate / (
+            1.0 - (1.0 + rate) ** (-lifetime)
+        )
 
 
-    def get_annualized_capital_cost(technology, default_discount_rate=0.07):
-        investment = get_cost(technology, "investment")
+    def get_annualized_capital_cost(
+        technology,
+        default_discount_rate=0.07,
+    ):
+        investment = get_investment_cost_for_pypsa(technology)
         fom_percent = get_cost(technology, "FOM", 0.0)
         lifetime = get_cost(technology, "lifetime")
-        discount_rate = float(cfg.get("costs", {}).get("discount_rate", default_discount_rate))
 
-        annualized_capex = investment * annuity(discount_rate, lifetime)
-        annualized_fom = annualized_capex * fom_percent / 100.0
+        discount_rate = float(
+            cfg.get("costs", {}).get(
+                "discount_rate",
+                default_discount_rate,
+            )
+        )
+
+        annualized_capex = (
+            investment
+            * annuity(discount_rate, lifetime)
+        )
+
+        # FOM is given as % of original investment per year.
+        annualized_fom = (
+            investment
+            * fom_percent
+            / 100.0
+        )
 
         return annualized_capex + annualized_fom
 
@@ -148,24 +239,72 @@ def build_test_network(cfg, data_dir):
     # -------------------------------------------------------------------------
     # 10. Add load shedding generator
     # -------------------------------------------------------------------------
-    # This provides a very expensive fallback to preserve feasibility.
+    # Very expensive fallback generation used to preserve model feasibility.
+
+    load_shedding_cost = float(
+        tech_cfg.get(
+            "load_shedding_marginal_cost",
+            10000.0,
+        )
+    )
+
     n.add(
         "Generator",
         "load_shedding",
         bus="electricity_bus",
         carrier="load_shedding",
         p_nom_extendable=True,
-        marginal_cost=float(cfg["demand"].get("load_shedding_cost_eur_per_mwh", 10000.0)),
+        marginal_cost=load_shedding_cost,
     )
 
     # -------------------------------------------------------------------------
     # 11. Add hydrogen system if enabled
     # -------------------------------------------------------------------------
-    hydrogen_enabled = bool(hydrogen_cfg.get("enabled", True))
-    hydrogen_mode = hydrogen_cfg.get("mode", "fixed_demand")
+      # -------------------------------------------------------------------------
+    # 11. Add hydrogen system if enabled
+    # -------------------------------------------------------------------------
+    hydrogen_enabled = bool(
+        hydrogen_cfg.get("enabled", True)
+    )
+
+    hydrogen_mode = hydrogen_cfg.get(
+        "mode",
+        "fixed_demand",
+    )
 
     if hydrogen_enabled:
-        # Add electrolyzer as a link from electricity to hydrogen.
+
+        # ---------------------------------------------------------------------
+        # Electrolyzer configuration
+        # ---------------------------------------------------------------------
+        electrolyzer_efficiency = float(
+            hydrogen_cfg.get(
+                "electrolyzer_efficiency",
+                get_cost(
+                    "electrolysis",
+                    "efficiency",
+                    0.7,
+                ),
+            )
+        )
+
+        electrolyzer_vom = float(
+            hydrogen_cfg.get(
+                "electrolyzer_variable_cost_eur_per_mwh",
+                get_cost(
+                    "electrolysis",
+                    "VOM",
+                    0.0,
+                ),
+            )
+        )
+
+        if not 0.0 < electrolyzer_efficiency <= 1.0:
+            raise ValueError(
+                "Electrolyzer efficiency must be "
+                "greater than 0 and at most 1."
+            )
+
         n.add(
             "Link",
             "electrolyzer",
@@ -173,23 +312,52 @@ def build_test_network(cfg, data_dir):
             bus1="hydrogen_bus",
             carrier="electrolyzer",
             p_nom_extendable=True,
-            efficiency=get_cost("electrolysis", "efficiency", 0.7),
-            capital_cost=get_annualized_capital_cost("electrolysis"),
-            marginal_cost=get_cost("electrolysis", "VOM", 0.0),
+            efficiency=electrolyzer_efficiency,
+            capital_cost=get_annualized_capital_cost(
+                "electrolysis"
+            ),
+            marginal_cost=electrolyzer_vom,
         )
 
-        # Add hydrogen storage.
+        # ---------------------------------------------------------------------
+        # Hydrogen storage configuration
+        # ---------------------------------------------------------------------
+        cyclic_storage = bool(
+            hydrogen_cfg.get(
+                "cyclic_storage",
+                True,
+            )
+        )
+
+        storage_standing_loss = float(
+            hydrogen_cfg.get(
+                "storage_standing_loss",
+                0.0,
+            )
+        )
+
+        if not 0.0 <= storage_standing_loss < 1.0:
+            raise ValueError(
+                "storage_standing_loss must be between "
+                "0 and 1."
+            )
+
         n.add(
             "Store",
             "hydrogen_storage",
             bus="hydrogen_bus",
             carrier="hydrogen_storage",
             e_nom_extendable=True,
-            capital_cost=get_annualized_capital_cost("hydrogen storage underground"),
-            e_cyclic=True,
+            capital_cost=get_annualized_capital_cost(
+                "hydrogen storage underground"
+            ),
+            e_cyclic=cyclic_storage,
+            standing_loss=storage_standing_loss,
         )
 
-        # Add fixed hydrogen demand if that mode is active.
+        # ---------------------------------------------------------------------
+        # Fixed hydrogen demand
+        # ---------------------------------------------------------------------
         if hydrogen_mode == "fixed_demand":
             n.add(
                 "Load",
@@ -198,19 +366,75 @@ def build_test_network(cfg, data_dir):
                 p_set=hydrogen_demand.values,
             )
 
-        # Add flexible hydrogen sink if that mode is active.
+        # ---------------------------------------------------------------------
+        # Legacy flexible hydrogen sink
+        # ---------------------------------------------------------------------
         elif hydrogen_mode == "flexible_sink":
+            legacy_demand_cfg = cfg.get("demand", {})
+
+            hydrogen_sink_mw = float(
+                hydrogen_cfg.get(
+                    "max_sink_mw",
+                    legacy_demand_cfg.get(
+                        "hydrogen_mw",
+                        0.0,
+                    ),
+                )
+            )
+
+            if hydrogen_sink_mw <= 0.0:
+                raise ValueError(
+                    "hydrogen.mode is 'flexible_sink', "
+                    "but no positive H2 sink capacity is configured. "
+                    "Use hydrogen.max_sink_mw or switch to "
+                    "'production_target'."
+                )
+
             n.add(
                 "Generator",
                 "hydrogen_sink",
                 bus="hydrogen_bus",
                 carrier="hydrogen_sink",
                 sign=-1.0,
+                p_nom=hydrogen_sink_mw,
                 p_nom_extendable=False,
-                p_nom=float(cfg["demand"].get("hydrogen_mw", 0.0)),
+                p_min_pu=0.0,
+                p_max_pu=1.0,
                 marginal_cost=0.0,
             )
 
+        # ---------------------------------------------------------------------
+        # Annual hydrogen production target
+        # ---------------------------------------------------------------------
+        elif hydrogen_mode == "production_target":
+            target_kt_h2 = float(
+                hydrogen_cfg.get(
+                    "target_annual_kt_h2",
+                    0.0,
+                )
+            )
+
+            if target_kt_h2 <= 0.0:
+                raise ValueError(
+                    "hydrogen.mode is 'production_target', "
+                    "but target_annual_kt_h2 is missing or <= 0."
+                )
+
+            # We intentionally do NOT implement the annual constraint here yet.
+            # This will be added in the next validation step using the
+            # optimization model / extra_functionality.
+            raise NotImplementedError(
+                "Hydrogen production_target configuration is valid, "
+                "but the annual PyPSA constraint has not yet been "
+                "implemented. This is the next model-validation step."
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown hydrogen mode '{hydrogen_mode}'. "
+                "Supported modes are: fixed_demand, "
+                "flexible_sink, production_target."
+            )
         # -------------------------------------------------------------------------
     # 12. Add bitcoin mining sink if enabled
     # -------------------------------------------------------------------------
@@ -293,6 +517,9 @@ def build_test_network(cfg, data_dir):
     # 13. Print basic network diagnostics
     # -------------------------------------------------------------------------
     print("Built network successfully")
+    print(f"Investment year: {investment_year}")
+    print(f"Weather year: {weather_year}")
+    print(f"Demand year: {demand_year}")
     print(f"Snapshots: {len(n.snapshots)}")
     print(f"Data directory: {data_dir}")
     print(f"Hydrogen enabled: {hydrogen_enabled}")

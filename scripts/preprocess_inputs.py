@@ -57,8 +57,12 @@ if KZ_REPO is None:
 with open(args.config, "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 
-YEAR = int(cfg["system"]["year"])
-SNAPSHOTS = int(cfg["system"]["snapshots"])
+system_cfg = cfg["system"]
+
+SNAPSHOTS = int(system_cfg["snapshots"])
+INVESTMENT_YEAR = int(system_cfg["investment_year"])
+WEATHER_YEAR = int(system_cfg["weather_year"])
+DEMAND_YEAR = int(system_cfg["demand_year"])
 
 
 # -----------------------------------------------------------------------------
@@ -85,7 +89,12 @@ print(f"\nBase dir : {BASE_DIR}")
 print(f"KZ repo  : {KZ_REPO}  (exists: {KZ_REPO.exists()})")
 print(f"Tech repo: {TECH_REPO}  (exists: {TECH_REPO.exists()})")
 print(f"Data dir : {DATA_DIR}")
-print(f"Year={YEAR}, Snapshots={SNAPSHOTS}\n")
+print(
+    f"Investment year={INVESTMENT_YEAR}, "
+    f"Weather year={WEATHER_YEAR}, "
+    f"Demand year={DEMAND_YEAR}, "
+    f"Snapshots={SNAPSHOTS}\n"
+)
 
 
 # =============================================================================
@@ -134,7 +143,7 @@ def build_costs():
 
     out_name = f"{cfg['costs']['active_dataset']}.csv"
     out = DATA_DIR / out_name
-    subset[["technology", "parameter", "value"]].to_csv(out, index=False)
+    subset[["technology", "parameter", "value", "unit"]].to_csv(out, index=False)
     print(f"\n  ✓ costs written → {out}  ({len(subset)} rows)")
 
 
@@ -150,9 +159,22 @@ def build_electricity_demand():
     print(f"  Demand file columns: {list(df.columns)}")
     print(f"  Years available: {sorted(df['year'].unique())}")
 
-    latest_year = df["year"].max()
-    df_year = df[df["year"] == latest_year].sort_values("month").reset_index(drop=True)
-    print(f"  Using year: {latest_year}  (most recent in file)")
+    available_years = sorted(df["year"].unique())
+
+    if DEMAND_YEAR not in available_years:
+        raise ValueError(
+            f"Configured demand year {DEMAND_YEAR} is not available "
+            f"in kz_demand_validation.csv. "
+            f"Available years: {available_years}"
+        )
+
+    df_year = (
+        df[df["year"] == DEMAND_YEAR]
+        .sort_values("month")
+        .reset_index(drop=True)
+    )
+
+    print(f"  Using configured demand year: {DEMAND_YEAR}")
     print(df_year[["month", "demand_korem"]].to_string(index=False))
 
     hours_per_month = [744, 672, 744, 720, 744, 720, 744, 744, 720, 744, 720, 744]
@@ -178,7 +200,7 @@ def build_electricity_demand():
 # =============================================================================
 def build_solar_cf():
     lat, lon = 43.3, 71.4
-    pvgis_year = 2020
+    pvgis_year = WEATHER_YEAR
 
     url = (
         f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
@@ -220,7 +242,7 @@ def _synthetic_solar():
 # =============================================================================
 def build_wind_cf():
     lat, lon = 43.6, 51.2
-    pvgis_year = 2020
+    pvgis_year = WEATHER_YEAR
 
     url = (
         f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
@@ -284,23 +306,87 @@ def build_hydrogen_demand():
     hydrogen_cfg = cfg.get("hydrogen", {})
     hydrogen_enabled = bool(hydrogen_cfg.get("enabled", True))
     hydrogen_mode = hydrogen_cfg.get("mode", "fixed_demand")
-    h2_mw = float(cfg["demand"].get("hydrogen_mw", 0.0))
 
+    # -------------------------------------------------------------------------
+    # Hydrogen disabled
+    # -------------------------------------------------------------------------
     if not hydrogen_enabled:
         s = pd.Series(np.zeros(SNAPSHOTS))
-        pd.DataFrame({"hydrogen_mw": s.values}).to_csv(DATA_DIR / "kz_hydrogen_demand.csv", index=False)
-        print(f"  ✓ hydrogen demand written → {DATA_DIR / 'kz_hydrogen_demand.csv'}  (all zeros; hydrogen disabled)")
+
+        pd.DataFrame(
+            {"hydrogen_mw": s.values}
+        ).to_csv(
+            DATA_DIR / "kz_hydrogen_demand.csv",
+            index=False
+        )
+
+        print(
+            f"  ✓ hydrogen demand written → "
+            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
+            f"(all zeros; hydrogen disabled)"
+        )
         return
 
-    if hydrogen_mode == "flexible_sink":
+    # -------------------------------------------------------------------------
+    # Flexible hydrogen production
+    #
+    # No fixed hourly H2 demand is required.
+    # The annual production target will later be imposed in build_network.py.
+    # -------------------------------------------------------------------------
+    if hydrogen_mode in {"flexible_sink", "production_target"}:
         s = pd.Series(np.zeros(SNAPSHOTS))
-        pd.DataFrame({"hydrogen_mw": s.values}).to_csv(DATA_DIR / "kz_hydrogen_demand.csv", index=False)
-        print(f"  ✓ hydrogen demand written → {DATA_DIR / 'kz_hydrogen_demand.csv'}  (all zeros; flexible_sink mode)")
+
+        pd.DataFrame(
+            {"hydrogen_mw": s.values}
+        ).to_csv(
+            DATA_DIR / "kz_hydrogen_demand.csv",
+            index=False
+        )
+
+        print(
+            f"  ✓ hydrogen demand written → "
+            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
+            f"(all zeros; mode={hydrogen_mode})"
+        )
         return
 
-    s = pd.Series(np.full(SNAPSHOTS, h2_mw))
-    pd.DataFrame({"hydrogen_mw": s.values}).to_csv(DATA_DIR / "kz_hydrogen_demand.csv", index=False)
-    print(f"  ✓ hydrogen demand written → {DATA_DIR / 'kz_hydrogen_demand.csv'}  (constant {h2_mw} MW from scenario config)")
+    # -------------------------------------------------------------------------
+    # Fixed hourly hydrogen demand
+    # -------------------------------------------------------------------------
+    if hydrogen_mode == "fixed_demand":
+        demand_cfg = cfg.get("demand", {})
+
+        if "hydrogen_mw" not in demand_cfg:
+            raise KeyError(
+                "Hydrogen mode is 'fixed_demand', but "
+                "'demand.hydrogen_mw' is missing from the scenario YAML."
+            )
+
+        h2_mw = float(demand_cfg["hydrogen_mw"])
+
+        s = pd.Series(np.full(SNAPSHOTS, h2_mw))
+
+        pd.DataFrame(
+            {"hydrogen_mw": s.values}
+        ).to_csv(
+            DATA_DIR / "kz_hydrogen_demand.csv",
+            index=False
+        )
+
+        print(
+            f"  ✓ hydrogen demand written → "
+            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
+            f"(constant {h2_mw} MW; fixed_demand mode)"
+        )
+        return
+
+    # -------------------------------------------------------------------------
+    # Invalid mode
+    # -------------------------------------------------------------------------
+    raise ValueError(
+        f"Unknown hydrogen mode '{hydrogen_mode}'. "
+        f"Supported modes are: fixed_demand, flexible_sink, production_target."
+    )
 
 
 # =============================================================================

@@ -1,64 +1,79 @@
-WARNING:pypsa.consistency:The following buses have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
-Index(['electricity_bus', 'hydrogen_bus'], dtype='str', name='name')
-WARNING:pypsa.consistency:The following generators have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
-Index(['solar', 'wind', 'load_shedding', 'hydrogen_sink',
-       'bitcoin_mining_sink'],
-      dtype='str', name='name')
-WARNING:pypsa.consistency:The following links have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
-Index(['electrolyzer'], dtype='str', name='name')
-WARNING:pypsa.consistency:The following stores have carriers which are not defined. Run n.sanitize() to add them. Components with undefined carriers:
-Index(['hydrogen_storage'], dtype='str', name='name')
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/networkclustering.py:16: UserWarning: The namespace `pypsa.networkclustering` is deprecated and will be removed in PyPSA v0.24. Please use `pypsa.clustering.spatial instead`. 
+  warnings.warn(
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/components.py:318: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '[]' has dtype incompatible with float64, please explicitly cast to a compatible dtype first.
+  attrs.loc[bool_b, "default"] = attrs.loc[bool_b].isin({True, "True"})
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/components.py:318: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '[]' has dtype incompatible with float64, please explicitly cast to a compatible dtype first.
+  attrs.loc[bool_b, "default"] = attrs.loc[bool_b].isin({True, "True"})
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/components.py:318: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '[]' has dtype incompatible with float64, please explicitly cast to a compatible dtype first.
+  attrs.loc[bool_b, "default"] = attrs.loc[bool_b].isin({True, "True"})
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/components.py:318: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '[]' has dtype incompatible with float64, please explicitly cast to a compatible dtype first.
+  attrs.loc[bool_b, "default"] = attrs.loc[bool_b].isin({True, "True"})
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/optimization/constraints.py:516: FutureWarning: DataFrame.groupby with axis=1 is deprecated. Do `frame.T.groupby(...)` without axis instead.
+  (-get_as_dense(n, "Load", "p_set", sns) * n.loads.sign)
 INFO:linopy.model: Solve problem using Highs solver
+INFO:linopy.model:Solver options:
+ - include_objective_constant: False
 INFO:linopy.io:Writing objective.
-Mining revenue estimate: 120000.00 EUR/MWh
+
+--- Bitcoin mining calculation ---
+ASIC efficiency:     16.00 J/TH
+Hashprice:           0.0800 EUR/TH/day
+TH-day per MWh:      2604.17
+Gross revenue:       208.33 EUR/MWh
+Other OPEX:          0.00 EUR/MWh
+Net operating value: 208.33 EUR/MWh
+----------------------------------
+
 Built network successfully
 Snapshots: 8760
 Data directory: data/scenario_base
 Hydrogen enabled: True
 Hydrogen mode: flexible_sink
 Mining enabled: True
-Writing constraints.:   0%|[38;2;128;191;255m          [0m| 0/13 [00:00<?, ?it/s]Writing constraints.:  38%|[38;2;128;191;255m███▊      [0m| 5/13 [00:00<00:00, 44.28it/s]Writing constraints.:  77%|[38;2;128;191;255m███████▋  [0m| 10/13 [00:00<00:00, 39.23it/s]Writing constraints.: 100%|[38;2;128;191;255m██████████[0m| 13/13 [00:00<00:00, 38.51it/s]
-Writing continuous variables.:   0%|[38;2;128;191;255m          [0m| 0/7 [00:00<?, ?it/s]Writing continuous variables.: 100%|[38;2;128;191;255m██████████[0m| 7/7 [00:00<00:00, 142.96it/s]
-INFO:linopy.io: Writing time: 0.68s
-Running HiGHS 1.14.0 (git hash: 7df0786): Copyright (c) 2026 under MIT licence terms
-LP linopy-problem-u6uexafb has 148925 rows; 70085 cols; 258066 nonzeros
+Writing constraints.:   0%|[38;2;128;191;255m          [0m| 0/16 [00:00<?, ?it/s]Writing constraints.:  50%|[38;2;128;191;255m█████     [0m| 8/16 [00:00<00:00, 62.73it/s]Writing constraints.:  94%|[38;2;128;191;255m█████████▍[0m| 15/16 [00:00<00:00, 21.70it/s]Writing constraints.: 100%|[38;2;128;191;255m██████████[0m| 16/16 [00:00<00:00, 23.72it/s]
+Writing continuous variables.:   0%|[38;2;128;191;255m          [0m| 0/7 [00:00<?, ?it/s]Writing continuous variables.:  86%|[38;2;128;191;255m████████▌ [0m| 6/7 [00:00<00:00, 53.71it/s]Writing continuous variables.: 100%|[38;2;128;191;255m██████████[0m| 7/7 [00:00<00:00, 54.42it/s]
+INFO:linopy.io: Writing time: 0.85s
+Running HiGHS 1.8.0 (git hash: eda5cbe): Copyright (c) 2024 HiGHS under MIT licence terms
+INFO:linopy.solvers:Log file at /tmp/highs.log
+ERROR:   getOptionIndex: Option "include_objective_constant" is unknown
 Coefficient ranges:
-  Matrix  [1e-09, 1e+00]
-  Cost    [2e-01, 1e+05]
-  Bound   [0e+00, 0e+00]
-  RHS     [2e+02, 1e+04]
+  Matrix [1e-09, 1e+00]
+  Cost   [2e-01, 1e+04]
+  Bound  [0e+00, 0e+00]
+  RHS    [2e+02, 1e+04]
 Presolving model
-47821 rows, 47825 cols, 125943 nonzeros 0s
-42793 rows, 34037 cols, 112926 nonzeros 0s
-Dependent equations search running on 10397 equations with time limit of 1000.00s
-Dependent equations search removed 0 rows and 0 nonzeros in 0.00s (limit = 1000.00s)
-40698 rows, 31942 cols, 114590 nonzeros 0s
-Presolve reductions: rows 40698(-108227); columns 31942(-38143); nonzeros 114590(-143476) 
+47821 rows, 47650 cols, 125768 nonzeros  0s
+40005 rows, 39834 cols, 131557 nonzeros  0s
+39879 rows, 39708 cols, 132565 nonzeros  0s
+Presolve : Reductions: rows 39879(-109046); columns 39708(-30377); elements 132565(-125501)
 Solving the presolved LP
-Using dual simplex solver
+Using EKK dual simplex solver - serial
   Iteration        Objective     Infeasibilities num(sum)
-          0    -1.8948457444e+11 Pr: 8585(8.09434e+06) 0.5s
-       8795    -1.7535305649e+11 Pr: 0(0) 0.7s
-
-Performed postsolve
+          0     0.0000000000e+00 Ph1: 0(0) 0s
+       8799     3.3947471567e+10 Pr: 0(0) 1s
 Solving the original LP from the solution after postsolve
-
-Model name          : linopy-problem-u6uexafb
-Model status        : Optimal
-Simplex   iterations: 8795
-Objective value     : -1.7535305649e+11
-P-D objective error :  2.2885609203e-14
-HiGHS run time      :          0.98
+Model   status      : Optimal
+Simplex   iterations: 8799
+Objective value     :  3.3947471567e+10
+HiGHS run time      :          0.72
 INFO:linopy.constants: Optimization successful: 
 Status: ok
 Termination condition: optimal
 Solution: 70085 primals, 148925 duals
-Objective: -1.75e+11
+Objective: 3.39e+10
 Solver model: available
-Solver message: Optimal
+Solver message: optimal
 
-INFO:pypsa.optimization.optimize:The shadow-prices of the constraints Generator-fix-p-lower, Generator-fix-p-upper, Generator-ext-p-lower, Generator-ext-p-upper, Link-ext-p-lower, Link-ext-p-upper, Store-ext-e-lower, Store-ext-e-upper, Store-energy_balance were not assigned to the network.
-INFO:pypsa.network.io:Exported network 'Unnamed Network' saved to 'results/scenario_base/network_solved.nc contains: buses, generators, links, stores, loads, sub_networks
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/optimization/optimize.py:333: FutureWarning: A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.
+The behavior will change in pandas 3.0. This inplace method will never work because the intermediate object on which we are setting values always behaves as a copy.
+
+For example, when doing 'df[col].method(value, inplace=True)', try using 'df.method({col: value}, inplace=True)' or df[col] = df[col].method(value) instead, to perform the operation inplace on the original object.
+
+
+  n.df(c)[attr + "_opt"].update(df)
+/home/jon/anaconda3/envs/pypsa-earth/lib/python3.10/site-packages/pypsa/optimization/optimize.py:435: FutureWarning: DataFrame.groupby with axis=1 is deprecated. Do `frame.T.groupby(...)` without axis instead.
+  pd.concat(
+INFO:pypsa.io:Exported network network_solved.nc has links, stores, buses, loads, generators
 Optimization finished
 Scenario file: configs/scenarios/scenario_base.yaml
 Data directory: data/scenario_base
