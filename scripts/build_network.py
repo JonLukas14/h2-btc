@@ -222,10 +222,10 @@ def build_test_network(cfg, data_dir):
         mining_max_mw = float(mining_cfg.get("max_capacity_mw", 0.0))
 
         hashprice_eur_per_th_day = float(
-            mining_cfg.get("hashprice_eur_per_th_day", 0.0)
+            mining_cfg.get("hashprice_eur_per_th_day", 0.08)
         )
         asic_efficiency_j_per_th = float(
-            mining_cfg.get("asic_efficiency_j_per_th", 0.0)
+            mining_cfg.get("asic_efficiency_j_per_th", 16.0)
         )
         other_opex_eur_per_mwh = float(
             mining_cfg.get("other_opex_eur_per_mwh", 0.0)
@@ -238,7 +238,7 @@ def build_test_network(cfg, data_dir):
         # Revenue per MWhe:
         # 1 MW sustained for 1 hour = 24 / mw_per_th_per_s TH-day
         if mw_per_th_per_s > 0:
-            th_day_per_mwh = 1/24.0 / mw_per_th_per_s # changed from 24.0 to 1/24.0 
+            th_day_per_mwh = (1.0 /24.0)  / mw_per_th_per_s # changed from 24.0 to 1/24.0 
             mining_revenue_eur_per_mwh = (
                 hashprice_eur_per_th_day * th_day_per_mwh
                 - other_opex_eur_per_mwh
@@ -246,7 +246,23 @@ def build_test_network(cfg, data_dir):
         else:
             mining_revenue_eur_per_mwh = 0.0
 
-        print(f"Mining revenue estimate: {mining_revenue_eur_per_mwh:.2f} EUR/MWh")
+        gross_revenue_eur_per_mwh = (
+            hashprice_eur_per_th_day * th_day_per_mwh
+        )
+
+        net_value_eur_per_mwh = (
+            gross_revenue_eur_per_mwh
+             -  other_opex_eur_per_mwh
+        )
+
+        print("\n--- Bitcoin mining calculation ---")
+        print(f"ASIC efficiency:     {asic_efficiency_j_per_th:.2f} J/TH")
+        print(f"Hashprice:           {hashprice_eur_per_th_day:.4f} EUR/TH/day")
+        print(f"TH-day per MWh:      {th_day_per_mwh:.2f}")
+        print(f"Gross revenue:       {gross_revenue_eur_per_mwh:.2f} EUR/MWh")
+        print(f"Other OPEX:          {other_opex_eur_per_mwh:.2f} EUR/MWh")
+        print(f"Net operating value: {net_value_eur_per_mwh:.2f} EUR/MWh")
+        print("----------------------------------\n")
 
         n.add(
             "Generator",
