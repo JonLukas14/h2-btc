@@ -235,25 +235,37 @@ def build_test_network(cfg, data_dir):
         # J/s = W, so J/TH * TH/s = W
         mw_per_th_per_s = asic_efficiency_j_per_th / 1e6
 
-        # Revenue per MWhe:
-        # 1 MW sustained for 1 hour = 24 / mw_per_th_per_s TH-day
-        if mw_per_th_per_s > 0:
-            th_day_per_mwh = (1.0 /24.0)  / mw_per_th_per_s # changed from 24.0 to 1/24.0 
-            mining_revenue_eur_per_mwh = (
-                hashprice_eur_per_th_day * th_day_per_mwh
-                - other_opex_eur_per_mwh
+        # Validate ASIC efficiency.
+        if mw_per_th_per_s <= 0:
+            raise ValueError(
+                "ASIC efficiency must be greater than zero."
             )
-        else:
-            mining_revenue_eur_per_mwh = 0.0
 
+        # 1 MWh means 1 MW operated for 1 hour.
+        # Hashprice is quoted per TH/s per day, therefore one hour is 1/24 day.
+        th_day_per_mwh = (1.0 / 24.0) / mw_per_th_per_s
+
+        # Gross mining revenue attributable to 1 MWh of electricity.
         gross_revenue_eur_per_mwh = (
-            hashprice_eur_per_th_day * th_day_per_mwh
+            hashprice_eur_per_th_day
+            * th_day_per_mwh
         )
 
+        # Net operating value after variable mining OPEX.
         net_value_eur_per_mwh = (
             gross_revenue_eur_per_mwh
-             -  other_opex_eur_per_mwh
+            - other_opex_eur_per_mwh
         )
+
+        if (
+            abs(asic_efficiency_j_per_th - 16.0) < 1e-9
+            and abs(hashprice_eur_per_th_day - 0.08) < 1e-9
+            and abs(other_opex_eur_per_mwh) < 1e-9
+        ):
+            assert abs(th_day_per_mwh - 2604.1667) < 0.01
+            assert abs(gross_revenue_eur_per_mwh - 208.3333) < 0.01
+
+
 
         print("\n--- Bitcoin mining calculation ---")
         print(f"ASIC efficiency:     {asic_efficiency_j_per_th:.2f} J/TH")
@@ -274,7 +286,7 @@ def build_test_network(cfg, data_dir):
             p_nom_extendable=False,
             p_min_pu=0.0,
             p_max_pu=1.0,
-            marginal_cost=-mining_revenue_eur_per_mwh,
+            marginal_cost=-net_value_eur_per_mwh,
         )
 
     # -------------------------------------------------------------------------
