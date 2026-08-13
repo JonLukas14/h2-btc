@@ -52,7 +52,7 @@ def main():
     # Run the optimization using the HiGHS solver.
     status, condition = n.optimize(
         solver_name="highs",
-        include_objective_constant=False,
+       
     )
 
     # Print solve status information for debugging and logging.
