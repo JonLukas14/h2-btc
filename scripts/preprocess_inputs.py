@@ -304,11 +304,18 @@ def _synthetic_wind():
 # =============================================================================
 def build_hydrogen_demand():
     hydrogen_cfg = cfg.get("hydrogen", {})
-    hydrogen_enabled = bool(hydrogen_cfg.get("enabled", True))
-    hydrogen_mode = hydrogen_cfg.get("mode", "fixed_demand")
+
+    hydrogen_enabled = bool(
+        hydrogen_cfg.get("enabled", True)
+    )
+
+    hydrogen_mode = hydrogen_cfg.get(
+        "mode",
+        "fixed_demand"
+    )
 
     # -------------------------------------------------------------------------
-    # Hydrogen disabled
+    # Case 1: Hydrogen is disabled
     # -------------------------------------------------------------------------
     if not hydrogen_enabled:
         s = pd.Series(np.zeros(SNAPSHOTS))
@@ -326,6 +333,72 @@ def build_hydrogen_demand():
             f"(all zeros; hydrogen disabled)"
         )
         return
+
+    # -------------------------------------------------------------------------
+    # Case 2: Flexible H2 production
+    #
+    # No fixed hourly H2 demand is imposed here.
+    # production_target will later be constrained inside the PyPSA model.
+    # -------------------------------------------------------------------------
+    if hydrogen_mode in {"flexible_sink", "production_target"}:
+        s = pd.Series(np.zeros(SNAPSHOTS))
+
+        pd.DataFrame(
+            {"hydrogen_mw": s.values}
+        ).to_csv(
+            DATA_DIR / "kz_hydrogen_demand.csv",
+            index=False
+        )
+
+        print(
+            f"  ✓ hydrogen demand written → "
+            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
+            f"(all zeros; mode={hydrogen_mode})"
+        )
+        return
+
+    # -------------------------------------------------------------------------
+    # Case 3: Fixed hourly H2 demand
+    # -------------------------------------------------------------------------
+    if hydrogen_mode == "fixed_demand":
+        demand_cfg = cfg.get("demand", {})
+
+        if "hydrogen_mw" not in demand_cfg:
+            raise KeyError(
+                "Hydrogen mode is 'fixed_demand', but "
+                "'demand.hydrogen_mw' is missing from the scenario YAML."
+            )
+
+        h2_mw = float(
+            demand_cfg["hydrogen_mw"]
+        )
+
+        s = pd.Series(
+            np.full(SNAPSHOTS, h2_mw)
+        )
+
+        pd.DataFrame(
+            {"hydrogen_mw": s.values}
+        ).to_csv(
+            DATA_DIR / "kz_hydrogen_demand.csv",
+            index=False
+        )
+
+        print(
+            f"  ✓ hydrogen demand written → "
+            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
+            f"(constant {h2_mw} MW; fixed_demand mode)"
+        )
+        return
+
+    # -------------------------------------------------------------------------
+    # Invalid hydrogen mode
+    # -------------------------------------------------------------------------
+    raise ValueError(
+        f"Unknown hydrogen mode '{hydrogen_mode}'. "
+        "Supported modes are: "
+        "fixed_demand, flexible_sink, production_target."
+    )
 
     # -------------------------------------------------------------------------
     # Flexible hydrogen production
