@@ -14,9 +14,9 @@ from plotly.subplots import make_subplots
 # This makes the script reusable for different scenarios and output folders.
 # Example usage:
 # python scripts/analyze_results.py \
-#   --config configs/scenarios/scenario_base.yaml \
-#   --network results/scenario_base/network_solved.nc \
-#   --outdir results/scenario_base
+#   --config configs/scenarios/scenario_s0_reference.yaml \
+#   --network results/s0_reference/network_solved.nc \
+#   --outdir results/s0_reference
 parser = argparse.ArgumentParser(description="Analyze solved PyPSA scenario results.")
 parser.add_argument("--config", required=True, help="Path to scenario YAML file")
 parser.add_argument("--network", required=True, help="Path to solved network NetCDF file")
