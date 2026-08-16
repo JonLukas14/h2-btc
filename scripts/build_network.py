@@ -74,13 +74,34 @@ def build_test_network(cfg, data_dir):
     # -------------------------------------------------------------------------
     # 4. Build snapshots
     # -------------------------------------------------------------------------
-    # Use an hourly DatetimeIndex for the modeled period.
-    snapshot_index = pd.date_range(
+        # -------------------------------------------------------------------------
+    # 4. Build snapshots
+    # -------------------------------------------------------------------------
+    # Build the complete calendar year corresponding to the weather data.
+    full_year_index = pd.date_range(
         start=f"{weather_year}-01-01 00:00:00",
-        periods=snapshots,
+        end=f"{weather_year}-12-31 23:00:00",
         freq="h",
     )
 
+    # For leap years, remove February 29 when using a 8760-hour model.
+    # This keeps the PyPSA timestamps aligned with the normalized
+    # demand, solar, and wind input series.
+    if len(full_year_index) == 8784 and snapshots == 8760:
+        leap_day = (
+            (full_year_index.month == 2)
+            & (full_year_index.day == 29)
+        )
+        snapshot_index = full_year_index[~leap_day]
+    else:
+        snapshot_index = full_year_index
+
+    # Fail explicitly if the calendar and configured horizon do not match.
+    if len(snapshot_index) != snapshots:
+        raise ValueError(
+            f"Snapshot calendar contains {len(snapshot_index)} hours, "
+            f"but system.snapshots={snapshots}."
+        )
     # -------------------------------------------------------------------------
     # 5. Create empty PyPSA network
     # -------------------------------------------------------------------------
@@ -521,6 +542,8 @@ def build_test_network(cfg, data_dir):
     print(f"Weather year: {weather_year}")
     print(f"Demand year: {demand_year}")
     print(f"Snapshots: {len(n.snapshots)}")
+    print(f"First snapshot: {n.snapshots[0]}")
+    print(f"Last snapshot: {n.snapshots[-1]}")
     print(f"Data directory: {data_dir}")
     print(f"Hydrogen enabled: {hydrogen_enabled}")
     print(f"Hydrogen mode: {hydrogen_mode}")

@@ -64,6 +64,38 @@ INVESTMENT_YEAR = int(system_cfg["investment_year"])
 WEATHER_YEAR = int(system_cfg["weather_year"])
 DEMAND_YEAR = int(system_cfg["demand_year"])
 
+def normalize_weather_year(values, series_name):
+    """
+    Convert a complete hourly weather year to the configured model horizon.
+
+    For a leap year with 8784 hours and a 8760-hour model,
+    February 29 is removed so that monthly/seasonal alignment
+    remains consistent with the 365-day demand profile.
+    """
+    full_index = pd.date_range(
+        start=f"{WEATHER_YEAR}-01-01 00:00:00",
+        end=f"{WEATHER_YEAR}-12-31 23:00:00",
+        freq="h",
+    )
+
+    values = pd.Series(values, index=full_index)
+
+    # For a leap-year weather dataset used in a 8760-hour model,
+    # remove February 29 rather than truncating the end of the year.
+    if len(full_index) == 8784 and SNAPSHOTS == 8760:
+        leap_day = (
+            (values.index.month == 2)
+            & (values.index.day == 29)
+        )
+        values = values.loc[~leap_day]
+
+    if len(values) != SNAPSHOTS:
+        raise ValueError(
+            f"{series_name} contains {len(values)} hours after "
+            f"calendar normalization, but system.snapshots={SNAPSHOTS}."
+        )
+
+    return values.reset_index(drop=True)
 
 # -----------------------------------------------------------------------------
 # 5. Helper function: choose the active cost dataset from scenario config
@@ -216,8 +248,15 @@ def build_solar_cf():
         resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         data = resp.json()
-        cf_values = [entry["P"] / 1000.0 for entry in data["outputs"]["hourly"]]
-        cf = pd.Series(cf_values).clip(0.0, 1.0).iloc[:SNAPSHOTS]
+        cf_values = [
+            entry["P"] / 1000.0
+            for entry in data["outputs"]["hourly"]
+        ]
+
+        cf = normalize_weather_year(
+            cf_values,
+            "solar_cf",
+        ).clip(0.0, 1.0)
         print(f"  mean CF={cf.mean():.3f}, peak CF={cf.max():.3f}")
         pd.DataFrame({"solar_cf": cf.values}).to_csv(DATA_DIR / "kz_solar_cf.csv", index=False)
         print(f"  ✓ solar CF written → {DATA_DIR / 'kz_solar_cf.csv'}  (PVGIS ERA5)")
@@ -258,19 +297,37 @@ def build_wind_cf():
         resp.raise_for_status()
         data = resp.json()
 
-        ws_10m = pd.Series([entry["WS10m"] for entry in data["outputs"]["hourly"]])
+        ws_10m = normalize_weather_year(
+            [entry["WS10m"] for entry in data["outputs"]["hourly"]],
+            "wind_speed",
+        )
 
-        rng = np.random.default_rng(seed=42)
-        ws_10m = ws_10m + rng.normal(0, 0.1, size=len(ws_10m))
-        ws_10m = ws_10m.clip(lower=0.0)
+        # -------------------------------------------------------------------------
+        # Extrapolate PVGIS wind speed from 10 m to turbine hub height.
+        #
+        # PVGIS provides WS10m at 10 m above ground.
+        # No artificial noise or empirical scaling factor is applied.
+        # -------------------------------------------------------------------------
+        reference_height_m = 10.0
+        hub_height_m = 100.0
 
-        ws_10m = ws_10m * 1.25
-
+        # Temporary explicit wind-shear assumption.
+        # This will later be replaced/validated against the atlite/PyPSA-Earth
+        # renewable-profile methodology.
         alpha = 0.20
-        ws_hub = ws_10m * (100 / 10) ** alpha
+
+        ws_hub = (
+            ws_10m
+            * (hub_height_m / reference_height_m) ** alpha
+        )
+
+        print(
+            f"  raw WS10m mean={ws_10m.mean():.3f} m/s, "
+            f"hub-height mean={ws_hub.mean():.3f} m/s"
+        )
 
         cf = _power_curve(ws_hub).clip(0.0, 1.0)
-        cf = cf.iloc[:SNAPSHOTS].reset_index(drop=True)
+        cf = cf.reset_index(drop=True)
 
         print(f"  mean CF={cf.mean():.3f}, peak CF={cf.max():.3f}")
         pd.DataFrame({"wind_cf": cf.values}).to_csv(DATA_DIR / "kz_wind_cf.csv", index=False)
@@ -398,67 +455,6 @@ def build_hydrogen_demand():
         f"Unknown hydrogen mode '{hydrogen_mode}'. "
         "Supported modes are: "
         "fixed_demand, flexible_sink, production_target."
-    )
-
-    # -------------------------------------------------------------------------
-    # Flexible hydrogen production
-    #
-    # No fixed hourly H2 demand is required.
-    # The annual production target will later be imposed in build_network.py.
-    # -------------------------------------------------------------------------
-    if hydrogen_mode in {"flexible_sink", "production_target"}:
-        s = pd.Series(np.zeros(SNAPSHOTS))
-
-        pd.DataFrame(
-            {"hydrogen_mw": s.values}
-        ).to_csv(
-            DATA_DIR / "kz_hydrogen_demand.csv",
-            index=False
-        )
-
-        print(
-            f"  ✓ hydrogen demand written → "
-            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
-            f"(all zeros; mode={hydrogen_mode})"
-        )
-        return
-
-    # -------------------------------------------------------------------------
-    # Fixed hourly hydrogen demand
-    # -------------------------------------------------------------------------
-    if hydrogen_mode == "fixed_demand":
-        demand_cfg = cfg.get("demand", {})
-
-        if "hydrogen_mw" not in demand_cfg:
-            raise KeyError(
-                "Hydrogen mode is 'fixed_demand', but "
-                "'demand.hydrogen_mw' is missing from the scenario YAML."
-            )
-
-        h2_mw = float(demand_cfg["hydrogen_mw"])
-
-        s = pd.Series(np.full(SNAPSHOTS, h2_mw))
-
-        pd.DataFrame(
-            {"hydrogen_mw": s.values}
-        ).to_csv(
-            DATA_DIR / "kz_hydrogen_demand.csv",
-            index=False
-        )
-
-        print(
-            f"  ✓ hydrogen demand written → "
-            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
-            f"(constant {h2_mw} MW; fixed_demand mode)"
-        )
-        return
-
-    # -------------------------------------------------------------------------
-    # Invalid mode
-    # -------------------------------------------------------------------------
-    raise ValueError(
-        f"Unknown hydrogen mode '{hydrogen_mode}'. "
-        f"Supported modes are: fixed_demand, flexible_sink, production_target."
     )
 
 

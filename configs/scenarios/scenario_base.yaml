@@ -1,4 +1,4 @@
-scenario_name: base_h2_btc_costs2030_weather2020
+scenario_name: s0_reference_costs2030_weather2020_demand2018
 
 system:
   snapshots: 8760
@@ -28,12 +28,17 @@ hydrogen:
   cyclic_storage: true
   storage_standing_loss: 0.0
 
+mining: 
+  enabled: false
+
 bitcoin:
   enabled: false
   max_capacity_mw: 200
   hashprice_eur_per_th_day: 0.08
   asic_efficiency_j_per_th: 16.0
   other_opex_eur_per_mwh: 0.0
+
+
 
 technology:
   load_shedding_marginal_cost: 10000
