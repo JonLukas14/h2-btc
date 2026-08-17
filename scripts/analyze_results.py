@@ -1,12 +1,20 @@
 from pathlib import Path
 import argparse
+
 import yaml
 import pypsa
 import pandas as pd
+
+import matplotlib
+
+# Use a non-interactive backend because this script is executed by Snakemake
+# without a graphical desktop/display.
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
 
 # -----------------------------------------------------------------------------
 # 1. Parse command-line arguments
@@ -497,24 +505,109 @@ dispatch_timeseries["mining_mw"] = (
 
 
 # -----------------------------------------------------------------------------
-# 16. Calculate capacity factors
+# 16. Calculate capacity and utilization factors
 # -----------------------------------------------------------------------------
-# Capacity factor = actual yearly output / maximum possible yearly output.
+# Two different metrics are required for variable renewable generators:
+#
+# availability_capacity_factor:
+#     Mean renewable availability from the input resource profile.
+#
+# dispatch_capacity_factor:
+#     Actual dispatched energy divided by installed capacity and modeled hours.
+#     This includes the effect of curtailment.
+#
+# For the electrolyzer only the operational/dispatch capacity factor applies.
+
 hours = float(snapshot_weights.sum())
 
-solar_p_nom = float(generators.loc["solar", "p_nom_opt"]) if "solar" in generators.index else 0.0
-wind_p_nom = float(generators.loc["wind", "p_nom_opt"]) if "wind" in generators.index else 0.0
-electrolyzer_p_nom = float(links.loc["electrolyzer", "p_nom_opt"]) if "electrolyzer" in links.index else 0.0
+solar_p_nom = (
+    float(generators.loc["solar", "p_nom_opt"])
+    if "solar" in generators.index
+    else 0.0
+)
+
+wind_p_nom = (
+    float(generators.loc["wind", "p_nom_opt"])
+    if "wind" in generators.index
+    else 0.0
+)
+
+electrolyzer_p_nom = (
+    float(links.loc["electrolyzer", "p_nom_opt"])
+    if "electrolyzer" in links.index
+    else 0.0
+)
+
+# Renewable resource / availability capacity factors.
+solar_availability_cf = (
+    float(
+        (
+            n.generators_t.p_max_pu["solar"]
+            * snapshot_weights
+        ).sum()
+        / hours
+    )
+    if "solar" in n.generators_t.p_max_pu.columns
+    else None
+)
+
+wind_availability_cf = (
+    float(
+        (
+            n.generators_t.p_max_pu["wind"]
+            * snapshot_weights
+        ).sum()
+        / hours
+    )
+    if "wind" in n.generators_t.p_max_pu.columns
+    else None
+)
+
+# Actual dispatched / operational capacity factors.
+solar_dispatch_cf = (
+    solar_generation / (solar_p_nom * hours)
+    if solar_p_nom > 0
+    else None
+)
+
+wind_dispatch_cf = (
+    wind_generation / (wind_p_nom * hours)
+    if wind_p_nom > 0
+    else None
+)
+
+electrolyzer_dispatch_cf = (
+    electrolyzer_input / (electrolyzer_p_nom * hours)
+    if electrolyzer_p_nom > 0
+    else None
+)
 
 capacity_factors = pd.DataFrame(
     {
-        "asset": ["solar", "wind", "electrolyzer"],
-        "capacity_opt": [solar_p_nom, wind_p_nom, electrolyzer_p_nom],
-        "total_output_or_input_mwh": [solar_generation, wind_generation, electrolyzer_input],
-        "capacity_factor": [
-            solar_generation / (solar_p_nom * hours) if solar_p_nom > 0 else None,
-            wind_generation / (wind_p_nom * hours) if wind_p_nom > 0 else None,
-            electrolyzer_input / (electrolyzer_p_nom * hours) if electrolyzer_p_nom > 0 else None,
+        "asset": [
+            "solar",
+            "wind",
+            "electrolyzer",
+        ],
+        "capacity_opt": [
+            solar_p_nom,
+            wind_p_nom,
+            electrolyzer_p_nom,
+        ],
+        "total_output_or_input_mwh": [
+            solar_generation,
+            wind_generation,
+            electrolyzer_input,
+        ],
+        "availability_capacity_factor": [
+            solar_availability_cf,
+            wind_availability_cf,
+            None,
+        ],
+        "dispatch_capacity_factor": [
+            solar_dispatch_cf,
+            wind_dispatch_cf,
+            electrolyzer_dispatch_cf,
         ],
     }
 )
@@ -934,7 +1027,7 @@ fig.add_trace(go.Bar(x=cost_data["component"], y=cost_data["value"], marker_colo
 fig.add_trace(go.Bar(x=generation_data["source"], y=generation_data["value"], marker_color=["#01696f", "#006494", "#a13544"], name="Generation"), row=1, col=2)
 fig.add_trace(go.Bar(x=real_capacity["asset"], y=real_capacity["value"], marker_color=["#01696f", "#006494", "#7a39bb", "#9a9a9a"], name="Capacities"), row=2, col=1)
 fig.add_trace(go.Scatter(x=storage_timeseries.index, y=storage_timeseries["hydrogen_storage_soc_mwh"], mode="lines", line=dict(color="#7a39bb", width=2), name="Hydrogen SOC"), row=2, col=2)
-fig.add_trace(go.Bar(x=capacity_factors["asset"], y=capacity_factors["capacity_factor"], marker_color=["#01696f", "#006494", "#7a39bb"], name="Capacity factors"), row=3, col=1)
+fig.add_trace(go.Bar(x=capacity_factors["asset"], y=capacity_factors["dispatch_capacity_factor"], marker_color=["#01696f", "#006494", "#7a39bb"], name="Dispatch capacity factors"), row=3, col=1)
 fig.add_trace(go.Bar(x=curtailment["asset"], y=curtailment["curtailment_rate"], marker_color=["#01696f", "#006494"], name="Curtailment"), row=3, col=2)
 
 fig.update_yaxes(title_text="EUR", row=1, col=1)
