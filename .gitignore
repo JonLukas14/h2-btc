@@ -20,3 +20,6 @@ data/*/processed_inputs.done
 # OS / editor files
 .DS_Store
 Thumbs.db
+
+# Generated S1 scenario inputs
+data/s1_battery/
