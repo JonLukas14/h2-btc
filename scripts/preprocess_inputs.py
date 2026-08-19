@@ -243,7 +243,10 @@ def build_costs():
         "onwind",
         "electrolysis",
         "hydrogen storage underground",
+        "battery inverter",
+        "battery storage",
     ]
+    
 
     keep_params = [
         "investment",

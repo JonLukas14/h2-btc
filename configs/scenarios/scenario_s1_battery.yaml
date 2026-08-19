@@ -1,0 +1,190 @@
+# =============================================================================
+# S0 — Off-grid hydrogen reference
+# =============================================================================
+#
+# Purpose:
+#   Reference case for the off-grid H2–Battery–Bitcoin model.
+#
+#   Renewable electricity is generated exclusively by solar PV and wind.
+#   Hydrogen production is the principal required product.
+#
+#   Battery storage: OFF
+#   Bitcoin mining: OFF
+#   Grid connection: NONE
+#
+# S0 will later be compared with:
+#   S1 = H2 + Battery
+#   S2 = H2 + Bitcoin
+#   S3 = H2 + Battery + Bitcoin
+# =============================================================================
+
+scenario_name: s1_offgrid_h2_battery_costs2030_weather2020
+
+
+# =============================================================================
+# 1. System definition
+# =============================================================================
+
+system:
+  model_type: off_grid
+
+  # Full hourly year.
+  snapshots: 8760
+
+  # Technology-cost assumption year.
+  # 2030 remains the validation year for now.
+  # The principal thesis case will later be changed to 2045.
+  investment_year: 2030
+
+  # Historical meteorological year used for renewable availability.
+  weather_year: 2020
+
+
+# =============================================================================
+# 2. Off-grid site / renewable-resource definition
+# =============================================================================
+#
+# Solar and wind must ultimately refer to the SAME off-grid site or a
+# geographically coherent local renewable-energy system.
+#
+# The final Kazakhstan location will be selected and justified separately.
+# Until then, the existing resource preprocessing remains a validation input.
+# =============================================================================
+
+site:
+  country: Kazakhstan
+
+  # To be defined after the renewable-potential/site-selection step.
+  name: null
+  latitude: null
+  longitude: null
+
+
+# =============================================================================
+# 3. Technology-cost assumptions
+# =============================================================================
+
+costs:
+  active_dataset: costs_2030
+
+  # Keep the currently validated 2030 source during architectural redesign.
+  # The multi-year datasets preserved under data/raw/technology_costs/
+  # will later support the 2045 main case and cost-year sensitivities.
+  datasets:
+    costs_2030: "technology-data/outputs/costs_2030.csv"
+
+  discount_rate: 0.07
+
+
+# =============================================================================
+# 4. Renewable generation
+# =============================================================================
+
+renewables:
+
+  solar:
+    enabled: true
+    p_nom_extendable: true
+    max_capacity_mw: null
+    profile_file: "data/reference/renewable_profiles/solar_cf_pvgis_2020_lat43.3_lon71.4.csv"
+
+  wind:
+    enabled: true
+    p_nom_extendable: true
+    max_capacity_mw: null
+    profile_file: "data/reference/renewable_profiles/wind_cf_pvgis_2020_lat43.6_lon51.2_h100m_alpha0.20.csv"
+
+# =============================================================================
+# 5. Hydrogen production
+# =============================================================================
+
+hydrogen:
+  enabled: true
+
+  # Flexible hourly operation subject to an annual production requirement.
+  mode: production_target
+
+  # Final value must be scientifically justified.
+  # Do not choose an arbitrary thesis target during architecture validation.
+  # TEMPORARY validation target.
+  # This is NOT the final thesis-scale hydrogen-production assumption.
+  target_annual_kt_h2: 1.0
+
+  # Hydrogen energy basis used to convert mass production to energy.
+  # Must remain consistent with the LHV-based technology-data efficiency.
+  hydrogen_lhv_kwh_per_kg: 33.33
+
+  # Variable electrolyzer operating cost.
+  electrolyzer_variable_cost_eur_per_mwh: 0.0
+
+  # Future model extensions may include:
+  # - minimum load
+  # - ramping
+  # - degradation
+  # - technology-specific efficiency curves
+
+
+# =============================================================================
+# 6. Hydrogen storage
+# =============================================================================
+#
+# Hydrogen storage is intentionally disabled initially.
+# The current research question focuses first on ELECTRICAL battery storage.
+# H2 storage can later be introduced as a controlled sensitivity if required.
+# =============================================================================
+
+hydrogen_storage:
+  enabled: false
+
+
+# =============================================================================
+# 7. Battery storage
+# =============================================================================
+#
+# Disabled in S0.
+# S1 and S3 will enable battery storage.
+#
+# Both battery power [MW] and battery energy [MWh] should ultimately be
+# optimized rather than imposing a fixed storage duration.
+# =============================================================================
+
+battery:
+  enabled: true
+
+  p_nom_extendable: true
+  e_nom_extendable: true
+
+  cyclic_state_of_charge: true
+
+  inverter_technology: "battery inverter"
+  storage_technology: "battery storage"
+
+  standing_loss: 0.0
+
+
+# =============================================================================
+# 8. Bitcoin mining
+# =============================================================================
+#
+# Disabled in S0.
+#
+# S2 and S3 will enable flexible Bitcoin mining.
+# Bitcoin parameters will later support both:
+#
+#   data_mode: live
+#       Fetch current market/network data.
+#
+#   data_mode: snapshot
+#       Use a stored timestamped data snapshot for thesis reproducibility.
+# =============================================================================
+
+bitcoin:
+  enabled: false
+
+  operating_mode: economic_dispatch
+
+  # Installed mining capacity will later either be optimized or bounded.
+  max_capacity_mw: null
+
+  data_mode: snapshot
+  snapshot_file: null
