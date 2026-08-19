@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -78,11 +79,7 @@ def build_test_network(cfg, data_dir):
     # -------------------------------------------------------------------------
     # 2. Guard against technologies not implemented in this development stage
     # -------------------------------------------------------------------------
-    if battery_enabled:
-        raise NotImplementedError(
-            "Battery storage is enabled in the scenario, but the battery "
-            "subsystem has not yet been implemented."
-        )
+
 
     if bitcoin_enabled:
         raise NotImplementedError(
@@ -198,6 +195,9 @@ def build_test_network(cfg, data_dir):
         "hydrogen_delivery",
     ]
 
+    if battery_enabled:
+        carriers.append("battery")
+
     n.add(
         "Carrier",
         carriers,
@@ -217,6 +217,13 @@ def build_test_network(cfg, data_dir):
         "hydrogen_bus",
         carrier="H2",
     )
+
+    if battery_enabled:
+        n.add(
+            "Bus",
+            "battery_bus",
+            carrier="battery",
+        )
 
     # -------------------------------------------------------------------------
     # 9. Cost helper functions
@@ -435,7 +442,186 @@ def build_test_network(cfg, data_dir):
         )
 
     # -------------------------------------------------------------------------
-    # 11. Add electrolyzer
+    # 11. Add electrical battery storage
+    # -------------------------------------------------------------------------
+    #
+    # The battery is represented by:
+    #
+    #   electricity_bus
+    #          |
+    #          v
+    #   battery_charger
+    #          |
+    #          v
+    #      battery_bus
+    #          |
+    #     battery_store
+    #          |
+    #          v
+    #   battery_discharger
+    #          |
+    #          v
+    #   electricity_bus
+    #
+    # Power capacity [MW] and energy capacity [MWh] are therefore
+    # independently extendable.
+    #
+    # IMPORTANT:
+    # The charger/discharger power-capacity coupling constraint is NOT
+    # created here because the Linopy capacity variables do not exist until
+    # PyPSA builds the optimization model. That constraint will be added in
+    # run_model.py through extra_functionality.
+    # -------------------------------------------------------------------------
+
+    if battery_enabled:
+        inverter_technology = str(
+            battery_cfg.get(
+                "inverter_technology",
+                "battery inverter",
+            )
+        )
+
+        storage_technology = str(
+            battery_cfg.get(
+                "storage_technology",
+                "battery storage",
+            )
+        )
+
+        battery_p_nom_extendable = bool(
+            battery_cfg.get(
+                "p_nom_extendable",
+                True,
+            )
+        )
+
+        battery_e_nom_extendable = bool(
+            battery_cfg.get(
+                "e_nom_extendable",
+                True,
+            )
+        )
+
+        # At the current development stage S1 is explicitly a capacity-
+        # expansion case. Fixed battery capacities are not yet supported.
+        if not battery_p_nom_extendable:
+            raise ValueError(
+                "The current S1 battery implementation requires "
+                "battery.p_nom_extendable=true."
+            )
+
+        if not battery_e_nom_extendable:
+            raise ValueError(
+                "The current S1 battery implementation requires "
+                "battery.e_nom_extendable=true."
+            )
+
+        inverter_efficiency = get_cost(
+            inverter_technology,
+            "efficiency",
+        )
+
+        if not 0.0 < inverter_efficiency <= 1.0:
+            raise ValueError(
+                "Battery inverter efficiency must be "
+                "greater than 0 and at most 1."
+            )
+
+        # technology-data / PyPSA-Eur convention:
+        # the generic battery-inverter efficiency is split symmetrically
+        # between charging and discharging.
+        battery_charge_efficiency = math.sqrt(
+            inverter_efficiency
+        )
+
+        battery_discharge_efficiency = math.sqrt(
+            inverter_efficiency
+        )
+
+        battery_standing_loss = float(
+            battery_cfg.get(
+                "standing_loss",
+                0.0,
+            )
+        )
+
+        if not 0.0 <= battery_standing_loss < 1.0:
+            raise ValueError(
+                "battery.standing_loss must be in the interval [0, 1)."
+            )
+
+        battery_cyclic = bool(
+            battery_cfg.get(
+                "cyclic_state_of_charge",
+                True,
+            )
+        )
+
+        battery_inverter_annual_cost = (
+            get_annualized_capital_cost(
+                inverter_technology
+            )
+        )
+
+        battery_storage_annual_cost = (
+            get_annualized_capital_cost(
+                storage_technology
+            )
+        )
+
+        # Charging Link.
+        #
+        # The inverter's annualized power cost is assigned here once.
+        # The discharging Link below receives zero capital cost because
+        # both directions represent the same physical bidirectional inverter.
+        n.add(
+            "Link",
+            "battery_charger",
+            bus0="electricity_bus",
+            bus1="battery_bus",
+            carrier="battery",
+            p_nom_extendable=True,
+            p_min_pu=0.0,
+            efficiency=battery_charge_efficiency,
+            capital_cost=battery_inverter_annual_cost,
+            marginal_cost=0.0,
+        )
+
+        # Energy reservoir.
+        n.add(
+            "Store",
+            "battery_store",
+            bus="battery_bus",
+            carrier="battery",
+            e_nom_extendable=True,
+            e_cyclic=battery_cyclic,
+            standing_loss=battery_standing_loss,
+            capital_cost=battery_storage_annual_cost,
+            marginal_cost=0.0,
+        )
+
+        # Discharging direction of the same inverter.
+        #
+        # Its capacity will be coupled to battery_charger during
+        # optimization. Therefore no second inverter CAPEX is assigned.
+        n.add(
+            "Link",
+            "battery_discharger",
+            bus0="battery_bus",
+            bus1="electricity_bus",
+            carrier="battery",
+            p_nom_extendable=True,
+            p_min_pu=0.0,
+            efficiency=battery_discharge_efficiency,
+            capital_cost=0.0,
+            marginal_cost=0.0,
+        )
+
+
+
+
+    # -------------------------------------------------------------------------
+    # 12. Add electrolyzer
     # -------------------------------------------------------------------------
     electrolyzer_efficiency = get_cost(
         "electrolysis",
@@ -483,7 +669,7 @@ def build_test_network(cfg, data_dir):
     )
 
     # -------------------------------------------------------------------------
-    # 12. Add flexible hydrogen delivery
+    # 13. Add flexible hydrogen delivery
     # -------------------------------------------------------------------------
     #
     # Hydrogen leaves the modeled plant through a flexible delivery sink.
@@ -569,7 +755,7 @@ def build_test_network(cfg, data_dir):
     )
 
     # -------------------------------------------------------------------------
-    # 13. Diagnostics
+    # 14. Diagnostics
     # -------------------------------------------------------------------------
     print("\n================================================")
     print("OFF-GRID NETWORK BUILT")
@@ -613,6 +799,53 @@ def build_test_network(cfg, data_dir):
         "  Annual target constraint: "
         "added during optimization"
     )
+
+    if battery_enabled:
+        print("\nBattery:")
+        print(
+            f"  Inverter technology: "
+            f"{inverter_technology}"
+        )
+        print(
+            f"  Storage technology: "
+            f"{storage_technology}"
+        )
+        print(
+            f"  Inverter efficiency: "
+            f"{inverter_efficiency:.4f}"
+        )
+        print(
+            f"  Charge efficiency: "
+            f"{battery_charge_efficiency:.6f}"
+        )
+        print(
+            f"  Discharge efficiency: "
+            f"{battery_discharge_efficiency:.6f}"
+        )
+        print(
+            f"  Round-trip efficiency: "
+            f"{battery_charge_efficiency * battery_discharge_efficiency:.4f}"
+        )
+        print(
+            f"  Inverter annual cost: "
+            f"{battery_inverter_annual_cost:.2f} EUR/MW/a"
+        )
+        print(
+            f"  Storage annual cost: "
+            f"{battery_storage_annual_cost:.2f} EUR/MWh/a"
+        )
+        print(
+            f"  Standing loss: "
+            f"{battery_standing_loss:.6f}"
+        )
+        print(
+            "  Power coupling constraint: "
+            "required during optimization"
+        )
+
+
+
+
 
     print("\nComponents:")
     print(

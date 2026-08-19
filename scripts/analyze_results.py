@@ -193,11 +193,7 @@ if hydrogen_mode != "production_target":
 
 # S0 only for this validation stage.
 # These checks will deliberately be relaxed when S1/S2/S3 are implemented.
-if battery_enabled:
-    raise NotImplementedError(
-        "Battery analysis has not yet been implemented. "
-        "Current analysis scope is S0."
-    )
+
 
 if bitcoin_enabled:
     raise NotImplementedError(
@@ -458,6 +454,174 @@ hydrogen_delivery_mw = (
     .reindex(n.snapshots)
 )
 
+# =============================================================================
+# Battery capacities and operation
+# =============================================================================
+#
+# The battery is optional. Defaults are chosen so that S0 and S1 produce
+# the same summary schema and can later be compared directly.
+#
+
+zero_series = pd.Series(
+    0.0,
+    index=n.snapshots,
+    dtype=float,
+)
+
+battery_power_mw = 0.0
+battery_discharger_input_capacity_mw = 0.0
+battery_discharge_power_ac_mw = 0.0
+battery_energy_mwh = 0.0
+battery_duration_h = np.nan
+
+battery_charge_efficiency = np.nan
+battery_discharge_efficiency = np.nan
+
+battery_charge_input_mw = zero_series.copy()
+battery_charge_output_mw = zero_series.copy()
+battery_discharge_input_mw = zero_series.copy()
+battery_discharge_output_mw = zero_series.copy()
+battery_store_power_mw = zero_series.copy()
+battery_soc_mwh = zero_series.copy()
+
+battery_charge_input_mwh = 0.0
+battery_charge_output_mwh = 0.0
+battery_discharge_input_mwh = 0.0
+battery_discharge_output_mwh = 0.0
+battery_losses_mwh = 0.0
+
+battery_round_trip_efficiency = np.nan
+battery_equivalent_full_cycles_per_year = np.nan
+
+battery_soc_min_mwh = 0.0
+battery_soc_max_mwh = 0.0
+
+battery_power_coupling_error_mw = 0.0
+max_battery_bus_balance_error_mw = 0.0
+
+
+if battery_enabled:
+    required_battery_links = [
+        "battery_charger",
+        "battery_discharger",
+    ]
+
+    for link in required_battery_links:
+        if link not in n.links.index:
+            raise KeyError(
+                f"Battery is enabled but Link '{link}' "
+                "is missing from the solved network."
+            )
+
+    if "battery_store" not in n.stores.index:
+        raise KeyError(
+            "Battery is enabled but Store "
+            "'battery_store' is missing."
+        )
+
+    # -------------------------------------------------------------------------
+    # Optimized capacities
+    # -------------------------------------------------------------------------
+    battery_power_mw = float(
+        n.links.at[
+            "battery_charger",
+            "p_nom_opt",
+        ]
+    )
+
+    battery_discharger_input_capacity_mw = float(
+        n.links.at[
+            "battery_discharger",
+            "p_nom_opt",
+        ]
+    )
+
+    battery_charge_efficiency = float(
+        n.links.at[
+            "battery_charger",
+            "efficiency",
+        ]
+    )
+
+    battery_discharge_efficiency = float(
+        n.links.at[
+            "battery_discharger",
+            "efficiency",
+        ]
+    )
+
+    # AC-side output rating of discharge inverter.
+    battery_discharge_power_ac_mw = (
+        battery_discharger_input_capacity_mw
+        * battery_discharge_efficiency
+    )
+
+    battery_energy_mwh = float(
+        n.stores.at[
+            "battery_store",
+            "e_nom_opt",
+        ]
+    )
+
+    if battery_power_mw > 1e-9:
+        battery_duration_h = (
+            battery_energy_mwh
+            / battery_power_mw
+        )
+
+    # -------------------------------------------------------------------------
+    # Hourly battery flows
+    # -------------------------------------------------------------------------
+    # Charging:
+    #   p0  = AC electricity withdrawn
+    #  -p1  = electricity arriving at battery bus
+    #
+    battery_charge_input_mw = (
+        n.links_t.p0[
+            "battery_charger"
+        ]
+        .reindex(n.snapshots)
+    )
+
+    battery_charge_output_mw = (
+        -n.links_t.p1[
+            "battery_charger"
+        ]
+        .reindex(n.snapshots)
+    )
+
+    # Discharging:
+    #   p0  = electricity withdrawn from battery bus
+    #  -p1  = AC electricity supplied
+    #
+    battery_discharge_input_mw = (
+        n.links_t.p0[
+            "battery_discharger"
+        ]
+        .reindex(n.snapshots)
+    )
+
+    battery_discharge_output_mw = (
+        -n.links_t.p1[
+            "battery_discharger"
+        ]
+        .reindex(n.snapshots)
+    )
+
+    # Store.p > 0 means discharge from Store to battery bus.
+    battery_store_power_mw = (
+        n.stores_t.p[
+            "battery_store"
+        ]
+        .reindex(n.snapshots)
+    )
+
+    battery_soc_mwh = (
+        n.stores_t.e[
+            "battery_store"
+        ]
+        .reindex(n.snapshots)
+    )
 
 # =============================================================================
 # 12. Annual energy totals
@@ -487,7 +651,48 @@ hydrogen_delivered_mwh = weighted_sum(
     hydrogen_delivery_mw
 )
 
+if battery_enabled:
+    battery_charge_input_mwh = weighted_sum(
+        battery_charge_input_mw
+    )
 
+    battery_charge_output_mwh = weighted_sum(
+        battery_charge_output_mw
+    )
+
+    battery_discharge_input_mwh = weighted_sum(
+        battery_discharge_input_mw
+    )
+
+    battery_discharge_output_mwh = weighted_sum(
+        battery_discharge_output_mw
+    )
+
+    battery_losses_mwh = (
+        battery_charge_input_mwh
+        - battery_discharge_output_mwh
+    )
+
+    if battery_charge_input_mwh > 1e-9:
+        battery_round_trip_efficiency = (
+            battery_discharge_output_mwh
+            / battery_charge_input_mwh
+        )
+
+    # Cell-side equivalent full cycles.
+    if battery_energy_mwh > 1e-9:
+        battery_equivalent_full_cycles_per_year = (
+            battery_discharge_input_mwh
+            / battery_energy_mwh
+        )
+
+    battery_soc_min_mwh = float(
+        battery_soc_mwh.min()
+    )
+
+    battery_soc_max_mwh = float(
+        battery_soc_mwh.max()
+    )
 # =============================================================================
 # 13. Hydrogen target and mass conversion
 # =============================================================================
@@ -757,7 +962,9 @@ capacity_factors = pd.DataFrame(
 electricity_balance_mw = (
     solar_dispatch_mw
     + wind_dispatch_mw
+    + battery_discharge_output_mw
     - electrolyzer_input_mw
+    - battery_charge_input_mw
 )
 
 hydrogen_balance_mw = (
@@ -765,6 +972,11 @@ hydrogen_balance_mw = (
     - hydrogen_delivery_mw
 )
 
+battery_bus_balance_mw = (
+    battery_charge_output_mw
+    + battery_store_power_mw
+    - battery_discharge_input_mw
+)
 
 max_electricity_balance_error_mw = float(
     electricity_balance_mw
@@ -778,6 +990,20 @@ max_hydrogen_balance_error_mw = float(
     .max()
 )
 
+max_battery_bus_balance_error_mw = float(
+    battery_bus_balance_mw
+    .abs()
+    .max()
+)
+
+if battery_enabled:
+    battery_power_coupling_error_mw = abs(
+        battery_power_mw
+        - (
+            battery_discharge_efficiency
+            * battery_discharger_input_capacity_mw
+        )
+    )
 
 # =============================================================================
 # 17. Cost accounting
@@ -894,6 +1120,21 @@ cost_labels = {
     "electrolyzer": "Electrolyzer",
 }
 
+if battery_enabled:
+    cost_assets.extend(
+        [
+            "battery_charger",
+            "battery_store",
+        ]
+    )
+
+    cost_labels.update(
+        {
+            "battery_charger": "Battery inverter",
+            "battery_store": "Battery storage",
+        }
+    )
+
 
 cost_breakdown = pd.DataFrame(
     {
@@ -935,6 +1176,25 @@ cost_breakdown[
     + cost_breakdown[
         "variable_operating_cost_eur"
     ]
+)
+
+battery_inverter_fixed_cost_eur = float(
+    fixed_cost_by_name.get(
+        "battery_charger",
+        0.0,
+    )
+)
+
+battery_storage_fixed_cost_eur = float(
+    fixed_cost_by_name.get(
+        "battery_store",
+        0.0,
+    )
+)
+
+battery_total_fixed_cost_eur = (
+    battery_inverter_fixed_cost_eur
+    + battery_storage_fixed_cost_eur
 )
 
 
@@ -982,6 +1242,49 @@ if (
         f"{max_hydrogen_balance_error_mw:.6e} MW."
     )
 
+if battery_enabled:
+    if (
+        max_battery_bus_balance_error_mw
+        > balance_tolerance_mw
+    ):
+        raise RuntimeError(
+            "Battery bus balance validation failed: "
+            f"max error="
+            f"{max_battery_bus_balance_error_mw:.6e} MW."
+        )
+
+    power_coupling_tolerance_mw = max(
+        1e-6,
+        abs(battery_power_mw) * 1e-8,
+    )
+
+    if (
+        battery_power_coupling_error_mw
+        > power_coupling_tolerance_mw
+    ):
+        raise RuntimeError(
+            "Battery inverter power-coupling "
+            "validation failed: "
+            f"error="
+            f"{battery_power_coupling_error_mw:.6e} MW."
+        )
+
+    if (
+        battery_charge_input_mwh > 1e-6
+        and not np.isclose(
+            battery_round_trip_efficiency,
+            (
+                battery_charge_efficiency
+                * battery_discharge_efficiency
+            ),
+            rtol=0.0,
+            atol=1e-6,
+        )
+    ):
+        raise RuntimeError(
+            "Battery round-trip efficiency "
+            "validation failed."
+        )
 
 efficiency_tolerance = 1e-8
 
@@ -1071,6 +1374,30 @@ dispatch_timeseries[
     "hydrogen_delivery_mw"
 ] = hydrogen_delivery_mw
 
+if battery_enabled:
+    dispatch_timeseries[
+        "battery_charge_input_mw"
+    ] = battery_charge_input_mw
+
+    dispatch_timeseries[
+        "battery_charge_output_mw"
+    ] = battery_charge_output_mw
+
+    dispatch_timeseries[
+        "battery_discharge_input_mw"
+    ] = battery_discharge_input_mw
+
+    dispatch_timeseries[
+        "battery_discharge_output_mw"
+    ] = battery_discharge_output_mw
+
+    dispatch_timeseries[
+        "battery_store_power_mw"
+    ] = battery_store_power_mw
+
+    dispatch_timeseries[
+        "battery_soc_mwh"
+    ] = battery_soc_mwh
 
 # =============================================================================
 # 21. Component tables
@@ -1159,6 +1486,23 @@ summary = pd.DataFrame(
             electrolyzer_capacity_mw
         ],
 
+        # Battery capacities
+        "battery_power_mw": [
+            battery_power_mw
+        ],
+        "battery_discharger_input_capacity_mw": [
+            battery_discharger_input_capacity_mw
+        ],
+        "battery_discharge_power_ac_mw": [
+            battery_discharge_power_ac_mw
+        ],
+        "battery_energy_mwh": [
+            battery_energy_mwh
+        ],
+        "battery_duration_h": [
+            battery_duration_h
+        ],
+
         # Electricity
         "solar_generation_mwh": [
             solar_generation_mwh
@@ -1197,6 +1541,35 @@ summary = pd.DataFrame(
         ],
         "specific_electricity_kwh_per_kg_h2": [
             specific_electricity_kwh_per_kg_h2
+        ],
+
+        # Battery operation
+        "battery_charge_input_mwh": [
+            battery_charge_input_mwh
+        ],
+        "battery_charge_output_mwh": [
+            battery_charge_output_mwh
+        ],
+        "battery_discharge_input_mwh": [
+            battery_discharge_input_mwh
+        ],
+        "battery_discharge_output_mwh": [
+            battery_discharge_output_mwh
+        ],
+        "battery_losses_mwh": [
+            battery_losses_mwh
+        ],
+        "battery_round_trip_efficiency": [
+            battery_round_trip_efficiency
+        ],
+        "battery_equivalent_full_cycles_per_year": [
+            battery_equivalent_full_cycles_per_year
+        ],
+        "battery_soc_min_mwh": [
+            battery_soc_min_mwh
+        ],
+        "battery_soc_max_mwh": [
+            battery_soc_max_mwh
         ],
 
         # Capacity factors
@@ -1253,6 +1626,16 @@ summary = pd.DataFrame(
             lcoh_eur_per_kg_h2
         ],
 
+        "battery_inverter_fixed_cost_eur_per_year": [
+            battery_inverter_fixed_cost_eur
+        ],
+        "battery_storage_fixed_cost_eur_per_year": [
+            battery_storage_fixed_cost_eur
+        ],
+        "battery_total_fixed_cost_eur_per_year": [
+            battery_total_fixed_cost_eur
+        ],
+
         # Validation
         "max_electricity_balance_error_mw": [
             max_electricity_balance_error_mw
@@ -1262,6 +1645,13 @@ summary = pd.DataFrame(
         ],
         "objective_cost_difference_eur": [
             objective_cost_difference_eur
+        ],
+
+        "max_battery_bus_balance_error_mw": [
+            max_battery_bus_balance_error_mw
+        ],
+        "battery_power_coupling_error_mw": [
+            battery_power_coupling_error_mw
         ],
     }
 )
@@ -1852,7 +2242,7 @@ summary_html.to_html(
 # 31. Terminal output
 # =============================================================================
 print("\n================================================")
-print("OFF-GRID S0 ANALYSIS")
+print("OFF-GRID SCENARIO ANALYSIS")
 print("================================================")
 
 print("\nOptimal capacities:")
@@ -1932,6 +2322,42 @@ print(
     f"{electrolyzer_capacity_factor:.4f}"
 )
 
+if battery_enabled:
+    print("\nBattery:")
+    print(
+        f"  Power capacity:     "
+        f"{battery_power_mw:.3f} MW"
+    )
+    print(
+        f"  Energy capacity:    "
+        f"{battery_energy_mwh:.3f} MWh"
+    )
+    print(
+        f"  Duration:           "
+        f"{battery_duration_h:.3f} h"
+    )
+    print(
+        f"  Charge from AC:     "
+        f"{battery_charge_input_mwh:,.3f} MWh/a"
+    )
+    print(
+        f"  Discharge to AC:    "
+        f"{battery_discharge_output_mwh:,.3f} MWh/a"
+    )
+    print(
+        f"  Losses:             "
+        f"{battery_losses_mwh:,.3f} MWh/a"
+    )
+    print(
+        f"  Round-trip eta:     "
+        f"{battery_round_trip_efficiency:.4f}"
+    )
+    print(
+        f"  Equivalent cycles:  "
+        f"{battery_equivalent_full_cycles_per_year:.1f} /a"
+    )
+
+
 print("\nCurtailment:")
 print(
     f"  Solar:             "
@@ -1977,6 +2403,16 @@ print(
     f"  Objective-cost gap:"
     f" {objective_cost_difference_eur:.6e} EUR"
 )
+
+if battery_enabled:
+    print(
+        f"  Battery bus error:  "
+        f"{max_battery_bus_balance_error_mw:.3e} MW"
+    )
+    print(
+        f"  Battery coupling:   "
+        f"{battery_power_coupling_error_mw:.3e} MW"
+    )
 
 print("\nChecks:")
 print("  H2 target:          PASS")
