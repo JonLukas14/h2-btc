@@ -4,6 +4,7 @@
 
 SCENARIOS = [
     "s0_reference",
+    "s1_battery",
 ]
 
 # Select scenario from the command line, e.g.:

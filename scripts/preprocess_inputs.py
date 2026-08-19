@@ -243,10 +243,19 @@ def build_costs():
         "onwind",
         "electrolysis",
         "hydrogen storage underground",
-        "battery inverter",
-        "battery storage",
     ]
-    
+
+    if cfg.get("battery", {}).get(
+        "enabled",
+        False,
+    ):
+        keep_techs.extend(
+            [
+                "battery inverter",
+                "battery storage",
+            ]
+        )
+
 
     keep_params = [
         "investment",
