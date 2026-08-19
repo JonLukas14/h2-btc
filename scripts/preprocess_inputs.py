@@ -1,109 +1,90 @@
 import sys
 import argparse
-import requests
+import hashlib
+import shutil
 from pathlib import Path
+
 import pandas as pd
-import numpy as np
 import yaml
 
 
-# -----------------------------------------------------------------------------
-# 1. Parse command-line arguments
-# -----------------------------------------------------------------------------
-# This allows preprocessing to use a chosen scenario file and write outputs
-# into a chosen data folder.
-parser = argparse.ArgumentParser(description="Preprocess model inputs for a PyPSA scenario.")
-parser.add_argument("--config", required=True, help="Path to scenario YAML file")
-parser.add_argument("--data-dir", required=True, help="Directory for processed input CSVs")
+# =============================================================================
+# 1. Command-line arguments
+# =============================================================================
+parser = argparse.ArgumentParser(
+    description="Preprocess deterministic model inputs for a PyPSA scenario."
+)
+
+parser.add_argument(
+    "--config",
+    required=True,
+    help="Path to scenario YAML file",
+)
+
+parser.add_argument(
+    "--data-dir",
+    required=True,
+    help="Directory for processed input CSVs",
+)
+
 args = parser.parse_args()
 
 
-# -----------------------------------------------------------------------------
-# 2. Define important paths
-# -----------------------------------------------------------------------------
-# BASE_DIR is the project root.
-# DATA_DIR is where processed model input CSVs will be written.
-# TECH_REPO points to the local technology-data repository.
+# =============================================================================
+# 2. Project paths
+# =============================================================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(args.data_dir)
-TECH_REPO = BASE_DIR / "technology-data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-
-# -----------------------------------------------------------------------------
-# 3. Locate the pypsa-kz-data repository automatically
-# -----------------------------------------------------------------------------
-_kz_candidates = [
-    BASE_DIR / "pypsa-kz-data",
-    BASE_DIR.parent / "pypsa-kz-data",
-    Path.home() / "git" / "pypsa-kz-data",
-]
-
-KZ_REPO = next(
-    (p for p in _kz_candidates if (p / "data" / "kz_demand_validation.csv").exists()),
-    None
+DATA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
 )
 
-if KZ_REPO is None:
-    print("[ERROR] Cannot find pypsa-kz-data in any of these locations:")
-    for p in _kz_candidates:
-        print(f"  {p}  (exists: {p.exists()})")
-    sys.exit(1)
 
-
-# -----------------------------------------------------------------------------
-# 4. Load scenario configuration
-# -----------------------------------------------------------------------------
-with open(args.config, "r", encoding="utf-8") as f:
+# =============================================================================
+# 3. Load scenario configuration
+# =============================================================================
+with open(
+    args.config,
+    "r",
+    encoding="utf-8",
+) as f:
     cfg = yaml.safe_load(f)
+
 
 system_cfg = cfg["system"]
 
-SNAPSHOTS = int(system_cfg["snapshots"])
-INVESTMENT_YEAR = int(system_cfg["investment_year"])
-WEATHER_YEAR = int(system_cfg["weather_year"])
-DEMAND_YEAR = int(system_cfg["demand_year"])
+SNAPSHOTS = int(
+    system_cfg["snapshots"]
+)
 
-def normalize_weather_year(values, series_name):
+INVESTMENT_YEAR = int(
+    system_cfg["investment_year"]
+)
+
+WEATHER_YEAR = int(
+    system_cfg["weather_year"]
+)
+
+
+# =============================================================================
+# 4. Helper functions
+# =============================================================================
+def get_active_costs_path():
     """
-    Convert a complete hourly weather year to the configured model horizon.
-
-    For a leap year with 8784 hours and a 8760-hour model,
-    February 29 is removed so that monthly/seasonal alignment
-    remains consistent with the 365-day demand profile.
+    Return the configured technology-cost dataset.
     """
-    full_index = pd.date_range(
-        start=f"{WEATHER_YEAR}-01-01 00:00:00",
-        end=f"{WEATHER_YEAR}-12-31 23:00:00",
-        freq="h",
-    )
 
-    values = pd.Series(values, index=full_index)
-
-    # For a leap-year weather dataset used in a 8760-hour model,
-    # remove February 29 rather than truncating the end of the year.
-    if len(full_index) == 8784 and SNAPSHOTS == 8760:
-        leap_day = (
-            (values.index.month == 2)
-            & (values.index.day == 29)
-        )
-        values = values.loc[~leap_day]
-
-    if len(values) != SNAPSHOTS:
-        raise ValueError(
-            f"{series_name} contains {len(values)} hours after "
-            f"calendar normalization, but system.snapshots={SNAPSHOTS}."
-        )
-
-    return values.reset_index(drop=True)
-
-# -----------------------------------------------------------------------------
-# 5. Helper function: choose the active cost dataset from scenario config
-# -----------------------------------------------------------------------------
-def get_active_costs_path(cfg, base_dir):
     costs_cfg = cfg["costs"]
-    active_name = costs_cfg["active_dataset"]
-    datasets = costs_cfg["datasets"]
+
+    active_name = costs_cfg[
+        "active_dataset"
+    ]
+
+    datasets = costs_cfg[
+        "datasets"
+    ]
 
     if active_name not in datasets:
         raise KeyError(
@@ -111,39 +92,151 @@ def get_active_costs_path(cfg, base_dir):
             f"Available options: {list(datasets.keys())}"
         )
 
-    return base_dir / datasets[active_name]
+    return (
+        BASE_DIR
+        / datasets[active_name]
+    )
 
 
-# -----------------------------------------------------------------------------
-# 6. Print environment information
-# -----------------------------------------------------------------------------
-print(f"\nBase dir : {BASE_DIR}")
-print(f"KZ repo  : {KZ_REPO}  (exists: {KZ_REPO.exists()})")
-print(f"Tech repo: {TECH_REPO}  (exists: {TECH_REPO.exists()})")
-print(f"Data dir : {DATA_DIR}")
+def get_profile_path(asset):
+    """
+    Return the configured reference renewable-profile file.
+    """
+
+    renewables_cfg = cfg.get(
+        "renewables",
+        {}
+    )
+
+    asset_cfg = renewables_cfg.get(
+        asset,
+        {}
+    )
+
+    profile_file = asset_cfg.get(
+        "profile_file"
+    )
+
+    if not profile_file:
+        raise KeyError(
+            f"renewables.{asset}.profile_file "
+            "is not configured."
+        )
+
+    path = (
+        BASE_DIR
+        / profile_file
+    )
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Reference {asset} profile "
+            f"does not exist: {path}"
+        )
+
+    return path
+
+
+def sha256_file(path):
+    """
+    Return SHA256 fingerprint of a file.
+    """
+
+    digest = hashlib.sha256()
+
+    with path.open("rb") as f:
+        for chunk in iter(
+            lambda: f.read(1024 * 1024),
+            b"",
+        ):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def validate_capacity_factor(
+    series,
+    name,
+):
+    """
+    Validate an hourly renewable capacity-factor series.
+    """
+
+    series = pd.to_numeric(
+        series,
+        errors="raise",
+    )
+
+    if len(series) != SNAPSHOTS:
+        raise ValueError(
+            f"{name} contains {len(series)} rows, "
+            f"but system.snapshots={SNAPSHOTS}."
+        )
+
+    if series.isna().any():
+        raise ValueError(
+            f"{name} contains NaN values."
+        )
+
+    if not series.between(
+        0.0,
+        1.0,
+    ).all():
+        raise ValueError(
+            f"{name} contains values outside [0, 1]."
+        )
+
+    # Detect clearly invalid constant resource profiles.
+    if series.nunique() <= 1:
+        raise ValueError(
+            f"{name} is constant over the complete "
+            "model horizon."
+        )
+
+    if float(series.std()) <= 0.01:
+        raise ValueError(
+            f"{name} shows insufficient temporal variation "
+            "for the current hourly resource model."
+        )
+
+    return series.reset_index(
+        drop=True
+    )
+
+
+# =============================================================================
+# 5. Environment information
+# =============================================================================
+print(
+    f"\nBase dir : {BASE_DIR}"
+)
+
+print(
+    f"Data dir : {DATA_DIR}"
+)
+
 print(
     f"Investment year={INVESTMENT_YEAR}, "
     f"Weather year={WEATHER_YEAR}, "
-    f"Demand year={DEMAND_YEAR}, "
     f"Snapshots={SNAPSHOTS}\n"
 )
 
 
 # =============================================================================
-# 7. Build costs CSV from selected cost dataset
+# 6. Technology costs
 # =============================================================================
 def build_costs():
-    source = get_active_costs_path(cfg, BASE_DIR)
+    source = get_active_costs_path()
+
     if not source.exists():
-        sys.exit(f"[ERROR] Missing: {source}")
+        sys.exit(
+            f"[ERROR] Missing cost dataset: "
+            f"{source}"
+        )
 
-    df = pd.read_csv(source)
-
-    keywords = ["solar", "wind", "electro", "hydrogen", "pem", "alkaline"]
-    matches = df[df["technology"].str.lower().str.contains("|".join(keywords), na=False)]
-    print("  Technologies in costs file matching solar/wind/electrolysis/hydrogen:")
-    for t in sorted(matches["technology"].unique()):
-        print(f"    {t}")
+    df = pd.read_csv(
+        source
+    )
 
     keep_techs = [
         "solar-utility",
@@ -151,330 +244,206 @@ def build_costs():
         "electrolysis",
         "hydrogen storage underground",
     ]
-    keep_params = ["investment", "FOM", "VOM", "efficiency", "lifetime"]
+
+    keep_params = [
+        "investment",
+        "FOM",
+        "VOM",
+        "efficiency",
+        "lifetime",
+    ]
 
     subset = df[
-        df["technology"].isin(keep_techs) &
-        df["parameter"].isin(keep_params)
-    ][["technology", "parameter", "value", "unit"]].copy()
-
-    #subset.loc[subset["parameter"] == "investment", "value"] *= 1000
+        df["technology"].isin(
+            keep_techs
+        )
+        & df["parameter"].isin(
+            keep_params
+        )
+    ][
+        [
+            "technology",
+            "parameter",
+            "value",
+            "unit",
+        ]
+    ].copy()
 
     if subset.empty:
-        print("\n  [WARNING] No rows matched. Printing ALL available technologies:")
-        print(df["technology"].unique().tolist())
-        sys.exit(
-            "\n[ERROR] Technology names in keep_techs do not match the file.\n"
-            "  Update the keep_techs list above to match the printed names."
+        raise RuntimeError(
+            "No technology-cost rows matched "
+            "the required technologies."
         )
 
-    print(f"\n  Using active cost dataset: {cfg['costs']['active_dataset']}")
-    print(f"  Source file: {source}")
-    print(f"\n  Matched rows:")
-    print(subset.to_string(index=False))
-
-    out_name = f"{cfg['costs']['active_dataset']}.csv"
-    out = DATA_DIR / out_name
-    subset[["technology", "parameter", "value", "unit"]].to_csv(out, index=False)
-    print(f"\n  ✓ costs written → {out}  ({len(subset)} rows)")
-
-
-# =============================================================================
-# 8. Build hourly electricity demand series
-# =============================================================================
-def build_electricity_demand():
-    source = KZ_REPO / "data" / "kz_demand_validation.csv"
-    if not source.exists():
-        sys.exit(f"[ERROR] Missing: {source}\n  KZ_REPO resolved to: {KZ_REPO}")
-
-    df = pd.read_csv(source, index_col=0)
-    print(f"  Demand file columns: {list(df.columns)}")
-    print(f"  Years available: {sorted(df['year'].unique())}")
-
-    available_years = sorted(df["year"].unique())
-
-    if DEMAND_YEAR not in available_years:
-        raise ValueError(
-            f"Configured demand year {DEMAND_YEAR} is not available "
-            f"in kz_demand_validation.csv. "
-            f"Available years: {available_years}"
-        )
-
-    df_year = (
-        df[df["year"] == DEMAND_YEAR]
-        .sort_values("month")
-        .reset_index(drop=True)
+    print(
+        f"  Active dataset: "
+        f"{cfg['costs']['active_dataset']}"
     )
 
-    print(f"  Using configured demand year: {DEMAND_YEAR}")
-    print(df_year[["month", "demand_korem"]].to_string(index=False))
+    print(
+        f"  Source: {source}"
+    )
 
-    hours_per_month = [744, 672, 744, 720, 744, 720, 744, 744, 720, 744, 720, 744]
-    monthly_gwh = df_year["demand_korem"].values.astype(float)
+    out_name = (
+        f"{cfg['costs']['active_dataset']}.csv"
+    )
 
-    hourly_demand = []
-    for gwh, hrs in zip(monthly_gwh, hours_per_month):
-        mw = (gwh * 1000.0) / hrs
-        hourly_demand.extend([mw] * hrs)
+    out = (
+        DATA_DIR
+        / out_name
+    )
 
-    hourly_series = pd.Series(hourly_demand)
-    print(f"\n  Hourly MW — min: {hourly_series.min():.1f}, mean: {hourly_series.mean():.1f}, max: {hourly_series.max():.1f}")
+    subset.to_csv(
+        out,
+        index=False,
+    )
 
-    out_series = hourly_series.iloc[:SNAPSHOTS].reset_index(drop=True)
-
-    out = DATA_DIR / "kz_electricity_demand.csv"
-    pd.DataFrame({"electricity_mw": out_series.values}).to_csv(out, index=False)
-    print(f"  ✓ electricity demand written → {out}  (rows={len(out_series)}, mean={out_series.mean():.1f} MW)")
+    print(
+        f"  ✓ costs written → "
+        f"{out} "
+        f"({len(subset)} rows)"
+    )
 
 
 # =============================================================================
-# 9. Build solar capacity factor time series
+# 7. Solar reference profile
 # =============================================================================
 def build_solar_cf():
-    lat, lon = 43.3, 71.4
-    pvgis_year = WEATHER_YEAR
-
-    url = (
-        f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
-        f"?lat={lat}&lon={lon}"
-        f"&startyear={pvgis_year}&endyear={pvgis_year}"
-        f"&pvcalculation=1&peakpower=1&loss=14"
-        f"&angle=30&aspect=0"
-        f"&outputformat=json&browser=0"
+    source = get_profile_path(
+        "solar"
     )
 
-    print(f"  Fetching solar CF from PVGIS (lat={lat}, lon={lon}) ...")
-    try:
-        resp = requests.get(url, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        cf_values = [
-            entry["P"] / 1000.0
-            for entry in data["outputs"]["hourly"]
-        ]
+    df = pd.read_csv(
+        source
+    )
 
-        cf = normalize_weather_year(
-            cf_values,
-            "solar_cf",
-        ).clip(0.0, 1.0)
-        print(f"  mean CF={cf.mean():.3f}, peak CF={cf.max():.3f}")
-        pd.DataFrame({"solar_cf": cf.values}).to_csv(DATA_DIR / "kz_solar_cf.csv", index=False)
-        print(f"  ✓ solar CF written → {DATA_DIR / 'kz_solar_cf.csv'}  (PVGIS ERA5)")
-    except Exception as e:
-        print(f"  [WARNING] PVGIS failed: {e} — using synthetic fallback")
-        _synthetic_solar()
+    if "solar_cf" not in df.columns:
+        raise KeyError(
+            f"{source} does not contain "
+            "'solar_cf'."
+        )
 
+    cf = validate_capacity_factor(
+        df["solar_cf"],
+        "solar_cf",
+    )
 
-def _synthetic_solar():
-    daily = [0.00, 0.00, 0.00, 0.00, 0.00, 0.03,
-             0.12, 0.28, 0.48, 0.65, 0.77, 0.84,
-             0.86, 0.80, 0.69, 0.52, 0.33, 0.14,
-             0.03, 0.00, 0.00, 0.00, 0.00, 0.00]
-    reps = (SNAPSHOTS // 24) + 1
-    cf = pd.Series((daily * reps)[:SNAPSHOTS])
-    pd.DataFrame({"solar_cf": cf.values}).to_csv(DATA_DIR / "kz_solar_cf.csv", index=False)
-    print(f"  ✓ solar CF written → {DATA_DIR / 'kz_solar_cf.csv'}  (synthetic fallback)")
+    out = (
+        DATA_DIR
+        / "kz_solar_cf.csv"
+    )
+
+    shutil.copyfile(
+        source,
+        out,
+    )
+
+    print(
+        f"  Source: {source}"
+    )
+
+    print(
+        f"  SHA256: "
+        f"{sha256_file(source)}"
+    )
+
+    print(
+        f"  rows={len(cf)}, "
+        f"mean={cf.mean():.6f}, "
+        f"std={cf.std():.6f}, "
+        f"min={cf.min():.6f}, "
+        f"max={cf.max():.6f}"
+    )
+
+    print(
+        f"  ✓ solar CF written → "
+        f"{out}"
+    )
 
 
 # =============================================================================
-# 10. Build wind capacity factor time series
+# 8. Wind reference profile
 # =============================================================================
 def build_wind_cf():
-    lat, lon = 43.6, 51.2
-    pvgis_year = WEATHER_YEAR
-
-    url = (
-        f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
-        f"?lat={lat}&lon={lon}"
-        f"&startyear={pvgis_year}&endyear={pvgis_year}"
-        f"&outputformat=json&browser=0"
-        f"&windspeed=1"
+    source = get_profile_path(
+        "wind"
     )
 
-    print(f"  Fetching wind data from PVGIS (lat={lat}, lon={lon}) ...")
-    try:
-        resp = requests.get(url, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-
-        ws_10m = normalize_weather_year(
-            [entry["WS10m"] for entry in data["outputs"]["hourly"]],
-            "wind_speed",
-        )
-
-        # -------------------------------------------------------------------------
-        # Extrapolate PVGIS wind speed from 10 m to turbine hub height.
-        #
-        # PVGIS provides WS10m at 10 m above ground.
-        # No artificial noise or empirical scaling factor is applied.
-        # -------------------------------------------------------------------------
-        reference_height_m = 10.0
-        hub_height_m = 100.0
-
-        # Temporary explicit wind-shear assumption.
-        # This will later be replaced/validated against the atlite/PyPSA-Earth
-        # renewable-profile methodology.
-        alpha = 0.20
-
-        ws_hub = (
-            ws_10m
-            * (hub_height_m / reference_height_m) ** alpha
-        )
-
-        print(
-            f"  raw WS10m mean={ws_10m.mean():.3f} m/s, "
-            f"hub-height mean={ws_hub.mean():.3f} m/s"
-        )
-
-        cf = _power_curve(ws_hub).clip(0.0, 1.0)
-        cf = cf.reset_index(drop=True)
-
-        print(f"  mean CF={cf.mean():.3f}, peak CF={cf.max():.3f}")
-        pd.DataFrame({"wind_cf": cf.values}).to_csv(DATA_DIR / "kz_wind_cf.csv", index=False)
-        print(f"  ✓ wind CF written → {DATA_DIR / 'kz_wind_cf.csv'}  (PVGIS ERA5, hub height corrected)")
-    except Exception as e:
-        print(f"  [WARNING] PVGIS failed: {e} — using synthetic fallback")
-        _synthetic_wind()
-
-
-def _power_curve(ws):
-    ws = pd.Series(ws).astype(float)
-    cf = pd.Series(0.0, index=ws.index)
-
-    mask_ramp = (ws >= 3.0) & (ws < 12.0)
-    cf[mask_ramp] = ((ws[mask_ramp] - 3.0) / (12.0 - 3.0)) ** 3
-
-    mask_rated = (ws >= 12.0) & (ws <= 25.0)
-    cf[mask_rated] = 1.0
-
-    return cf.clip(0.0, 1.0)
-
-
-def _synthetic_wind():
-    cf = pd.Series(np.full(SNAPSHOTS, 0.38))
-    pd.DataFrame({"wind_cf": cf.values}).to_csv(DATA_DIR / "kz_wind_cf.csv", index=False)
-    print(f"  ✓ wind CF written → {DATA_DIR / 'kz_wind_cf.csv'}  (synthetic fallback, 38% constant)")
-
-
-# =============================================================================
-# 11. Build hydrogen demand time series
-# =============================================================================
-def build_hydrogen_demand():
-    hydrogen_cfg = cfg.get("hydrogen", {})
-
-    hydrogen_enabled = bool(
-        hydrogen_cfg.get("enabled", True)
+    df = pd.read_csv(
+        source
     )
 
-    hydrogen_mode = hydrogen_cfg.get(
-        "mode",
-        "fixed_demand"
+    if "wind_cf" not in df.columns:
+        raise KeyError(
+            f"{source} does not contain "
+            "'wind_cf'."
+        )
+
+    cf = validate_capacity_factor(
+        df["wind_cf"],
+        "wind_cf",
     )
 
-    # -------------------------------------------------------------------------
-    # Case 1: Hydrogen is disabled
-    # -------------------------------------------------------------------------
-    if not hydrogen_enabled:
-        s = pd.Series(np.zeros(SNAPSHOTS))
+    out = (
+        DATA_DIR
+        / "kz_wind_cf.csv"
+    )
 
-        pd.DataFrame(
-            {"hydrogen_mw": s.values}
-        ).to_csv(
-            DATA_DIR / "kz_hydrogen_demand.csv",
-            index=False
-        )
+    shutil.copyfile(
+        source,
+        out,
+    )
 
-        print(
-            f"  ✓ hydrogen demand written → "
-            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
-            f"(all zeros; hydrogen disabled)"
-        )
-        return
+    print(
+        f"  Source: {source}"
+    )
 
-    # -------------------------------------------------------------------------
-    # Case 2: Flexible H2 production
-    #
-    # No fixed hourly H2 demand is imposed here.
-    # production_target will later be constrained inside the PyPSA model.
-    # -------------------------------------------------------------------------
-    if hydrogen_mode in {"flexible_sink", "production_target"}:
-        s = pd.Series(np.zeros(SNAPSHOTS))
+    print(
+        f"  SHA256: "
+        f"{sha256_file(source)}"
+    )
 
-        pd.DataFrame(
-            {"hydrogen_mw": s.values}
-        ).to_csv(
-            DATA_DIR / "kz_hydrogen_demand.csv",
-            index=False
-        )
+    print(
+        f"  rows={len(cf)}, "
+        f"mean={cf.mean():.6f}, "
+        f"std={cf.std():.6f}, "
+        f"min={cf.min():.6f}, "
+        f"max={cf.max():.6f}, "
+        f"unique={cf.nunique()}"
+    )
 
-        print(
-            f"  ✓ hydrogen demand written → "
-            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
-            f"(all zeros; mode={hydrogen_mode})"
-        )
-        return
-
-    # -------------------------------------------------------------------------
-    # Case 3: Fixed hourly H2 demand
-    # -------------------------------------------------------------------------
-    if hydrogen_mode == "fixed_demand":
-        demand_cfg = cfg.get("demand", {})
-
-        if "hydrogen_mw" not in demand_cfg:
-            raise KeyError(
-                "Hydrogen mode is 'fixed_demand', but "
-                "'demand.hydrogen_mw' is missing from the scenario YAML."
-            )
-
-        h2_mw = float(
-            demand_cfg["hydrogen_mw"]
-        )
-
-        s = pd.Series(
-            np.full(SNAPSHOTS, h2_mw)
-        )
-
-        pd.DataFrame(
-            {"hydrogen_mw": s.values}
-        ).to_csv(
-            DATA_DIR / "kz_hydrogen_demand.csv",
-            index=False
-        )
-
-        print(
-            f"  ✓ hydrogen demand written → "
-            f"{DATA_DIR / 'kz_hydrogen_demand.csv'} "
-            f"(constant {h2_mw} MW; fixed_demand mode)"
-        )
-        return
-
-    # -------------------------------------------------------------------------
-    # Invalid hydrogen mode
-    # -------------------------------------------------------------------------
-    raise ValueError(
-        f"Unknown hydrogen mode '{hydrogen_mode}'. "
-        "Supported modes are: "
-        "fixed_demand, flexible_sink, production_target."
+    print(
+        f"  ✓ wind CF written → "
+        f"{out}"
     )
 
 
 # =============================================================================
-# 12. Main execution block
+# 9. Main
 # =============================================================================
 if __name__ == "__main__":
-    print("── 1. Costs ────────────────────────────────────────────────────────")
+    print(
+        "── 1. Costs "
+        "────────────────────────────────────────"
+    )
+
     build_costs()
 
-    print("\n── 2. Electricity demand ───────────────────────────────────────────")
-    build_electricity_demand()
+    print(
+        "\n── 2. Solar reference profile "
+        "──────────────────────"
+    )
 
-    print("\n── 3. Solar CF ─────────────────────────────────────────────────────")
     build_solar_cf()
 
-    print("\n── 4. Wind CF ──────────────────────────────────────────────────────")
+    print(
+        "\n── 3. Wind reference profile "
+        "───────────────────────"
+    )
+
     build_wind_cf()
 
-    print("\n── 5. Hydrogen demand ──────────────────────────────────────────────")
-    build_hydrogen_demand()
-
-    print("\n✓ Done. All processed inputs written successfully.")
+    print(
+        "\n✓ Deterministic off-grid preprocessing "
+        "completed successfully."
+    )
