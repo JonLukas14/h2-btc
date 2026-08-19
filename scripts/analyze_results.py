@@ -1773,6 +1773,14 @@ capacity_plot = pd.DataFrame(
     }
 )
 
+if battery_enabled:
+    capacity_plot.loc[
+        len(capacity_plot)
+    ] = {
+        "asset": "Battery",
+        "capacity_mw": battery_power_mw,
+    }
+
 fig, ax = plt.subplots(
     figsize=(8, 4.5),
     dpi=160,
@@ -2036,21 +2044,237 @@ fig.savefig(
 
 plt.close(fig)
 
+# =============================================================================
+# 29. Static battery plots
+# =============================================================================
+if battery_enabled:
+
+    # -------------------------------------------------------------------------
+    # Battery power and energy capacity
+    # -------------------------------------------------------------------------
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(9, 4.5),
+        dpi=160,
+    )
+
+    power_bar = axes[0].bar(
+        ["Battery power"],
+        [battery_power_mw],
+    )
+
+    axes[0].set_ylabel(
+        "Power [MW]"
+    )
+
+    axes[0].set_title(
+        "Battery Power Capacity"
+    )
+
+    axes[0].bar_label(
+        power_bar,
+        fmt="%.2f",
+        padding=3,
+    )
+
+    energy_bar = axes[1].bar(
+        ["Battery energy"],
+        [battery_energy_mwh],
+    )
+
+    axes[1].set_ylabel(
+        "Energy [MWh]"
+    )
+
+    axes[1].set_title(
+        "Battery Energy Capacity"
+    )
+
+    axes[1].bar_label(
+        energy_bar,
+        fmt="%.2f",
+        padding=3,
+    )
+
+    for ax in axes:
+        ax.spines["top"].set_visible(
+            False
+        )
+        ax.spines["right"].set_visible(
+            False
+        )
+
+    fig.suptitle(
+        f"Optimized Battery — "
+        f"{battery_duration_h:.2f} h duration"
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        OUTDIR / "battery_capacity.png",
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+    # -------------------------------------------------------------------------
+    # Annual battery throughput and losses
+    # -------------------------------------------------------------------------
+    battery_operation_plot = pd.DataFrame(
+        {
+            "flow": [
+                "Charge from AC",
+                "Discharge to AC",
+                "Losses",
+            ],
+            "energy_mwh": [
+                battery_charge_input_mwh,
+                battery_discharge_output_mwh,
+                battery_losses_mwh,
+            ],
+        }
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(8, 4.5),
+        dpi=160,
+    )
+
+    bars = ax.bar(
+        battery_operation_plot["flow"],
+        battery_operation_plot["energy_mwh"],
+    )
+
+    ax.set_title(
+        "Annual Battery Operation"
+    )
+
+    ax.set_ylabel(
+        "Energy [MWh/a]"
+    )
+
+    ax.bar_label(
+        bars,
+        fmt="%.1f",
+        padding=3,
+    )
+
+    ax.spines["top"].set_visible(
+        False
+    )
+
+    ax.spines["right"].set_visible(
+        False
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        OUTDIR / "battery_operation.png",
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+    # -------------------------------------------------------------------------
+    # Battery state of charge
+    # -------------------------------------------------------------------------
+    fig, ax = plt.subplots(
+        figsize=(11, 4.5),
+        dpi=160,
+    )
+
+    ax.plot(
+        n.snapshots,
+        battery_soc_mwh,
+    )
+
+    ax.set_title(
+        "Battery State of Charge"
+    )
+
+    ax.set_xlabel(
+        "Time"
+    )
+
+    ax.set_ylabel(
+        "Stored energy [MWh]"
+    )
+
+    ax.set_ylim(
+        bottom=0.0,
+    )
+
+    ax.spines["top"].set_visible(
+        False
+    )
+
+    ax.spines["right"].set_visible(
+        False
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        OUTDIR / "battery_soc.png",
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+else:
+    # Remove battery-specific figures if a non-battery scenario is
+    # analyzed into a directory that previously contained them.
+    for battery_plot_file in [
+        "battery_capacity.png",
+        "battery_operation.png",
+        "battery_soc.png",
+    ]:
+        path = (
+            OUTDIR
+            / battery_plot_file
+        )
+
+        if path.exists():
+            path.unlink()
+
 
 # =============================================================================
-# 29. Interactive Plotly dashboard
+# 30. Interactive Plotly dashboard
 # =============================================================================
-dashboard = make_subplots(
-    rows=3,
-    cols=2,
-    subplot_titles=(
+if battery_enabled:
+    dashboard_rows = 4
+
+    dashboard_titles = (
         "Annual Cost by Asset",
         "Annual Renewable Generation",
         "Optimized Power Capacities",
         "Capacity Factors",
         "Renewable Curtailment",
         "Hydrogen Target vs Delivery",
-    ),
+        "Annual Battery Operation",
+        "Battery State of Charge",
+    )
+
+else:
+    dashboard_rows = 3
+
+    dashboard_titles = (
+        "Annual Cost by Asset",
+        "Annual Renewable Generation",
+        "Optimized Power Capacities",
+        "Capacity Factors",
+        "Renewable Curtailment",
+        "Hydrogen Target vs Delivery",
+    )
+
+
+dashboard = make_subplots(
+    rows=dashboard_rows,
+    cols=2,
+    subplot_titles=dashboard_titles,
 )
 
 
@@ -2203,6 +2427,19 @@ dashboard.update_yaxes(
     col=2,
 )
 
+if battery_enabled:
+    dashboard.update_yaxes(
+        title_text="MWh/a",
+        row=4,
+        col=1,
+    )
+
+    dashboard.update_yaxes(
+        title_text="MWh",
+        row=4,
+        col=2,
+    )
+
 
 dashboard.update_layout(
     title_text=(
@@ -2221,7 +2458,7 @@ dashboard.write_html(
 
 
 # =============================================================================
-# 30. HTML summary table
+# 31. HTML summary table
 # =============================================================================
 summary_html = (
     summary
@@ -2239,7 +2476,7 @@ summary_html.to_html(
 
 
 # =============================================================================
-# 31. Terminal output
+# 32. Terminal output
 # =============================================================================
 print("\n================================================")
 print("OFF-GRID SCENARIO ANALYSIS")
@@ -2420,6 +2657,10 @@ print("  Electrolyzer eta:   PASS")
 print("  Electricity balance:PASS")
 print("  Hydrogen balance:   PASS")
 print("  Cost accounting:    PASS")
+if battery_enabled:
+    print("  Battery bus balance: PASS")
+    print("  Battery coupling:    PASS")
+    print("  Battery SOC bounds:  PASS")
 
 print("================================================")
 
