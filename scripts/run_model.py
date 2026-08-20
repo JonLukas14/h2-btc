@@ -304,7 +304,7 @@ def add_battery_power_coupling_constraint(
     print("-----------------------------------------\n")
 
 # =============================================================================
-# 6. Validate optimized off-grid S0
+# 6. Validate optimized off-grid scenario
 # =============================================================================
 def validate_solution(
     n,
@@ -312,7 +312,7 @@ def validate_solution(
 ):
     """
     Validate the most important physical and numerical relationships
-    after optimization for both S0 and battery-enabled S1.
+    after optimization for S0, battery-enabled S1, and Bitcoin-enabled S2.
     """
 
     target_mwh_h2 = get_hydrogen_target_mwh(
@@ -328,6 +328,18 @@ def validate_solution(
 
     battery_enabled = bool(
         battery_cfg.get(
+            "enabled",
+            False,
+        )
+    )
+
+    bitcoin_cfg = cfg.get(
+        "bitcoin",
+        {},
+    )
+
+    bitcoin_enabled = bool(
+        bitcoin_cfg.get(
             "enabled",
             False,
         )
@@ -395,6 +407,226 @@ def validate_solution(
             * weights
         ).sum()
     )
+
+    # -------------------------------------------------------------------------
+    # Bitcoin mining quantities
+    # -------------------------------------------------------------------------
+    #
+    # bitcoin_mining_sink is a Generator with sign=-1.
+    #
+    # Its dispatch variable itself remains positive. The sign only controls
+    # how that dispatch enters the electricity-bus balance. Therefore the
+    # positive dispatch series below is interpreted directly as electricity
+    # consumption by the mining facility.
+    bitcoin_consumption = (
+        electrolyzer_input
+        * 0.0
+    )
+
+    bitcoin_capacity_mw = 0.0
+    bitcoin_consumption_mwh = 0.0
+    bitcoin_utilization_rate = np.nan
+    bitcoin_full_capacity_hours = 0.0
+    bitcoin_zero_dispatch_hours = 0.0
+    bitcoin_max_dispatch_mw = 0.0
+    bitcoin_min_dispatch_mw = 0.0
+
+    if bitcoin_enabled:
+        bitcoin_asset = "bitcoin_mining_sink"
+
+        if bitcoin_asset not in n.generators.index:
+            raise KeyError(
+                "Bitcoin mining is enabled, but Generator "
+                "'bitcoin_mining_sink' is missing."
+            )
+
+        bitcoin_sign = float(
+            n.generators.at[
+                bitcoin_asset,
+                "sign",
+            ]
+        )
+
+        if not np.isclose(
+            bitcoin_sign,
+            -1.0,
+            rtol=0.0,
+            atol=1e-12,
+        ):
+            raise RuntimeError(
+                "Bitcoin mining sink must use Generator sign=-1. "
+                f"Actual sign={bitcoin_sign}."
+            )
+
+        if bool(
+            n.generators.at[
+                bitcoin_asset,
+                "p_nom_extendable",
+            ]
+        ):
+            raise RuntimeError(
+                "The current S2 validation case requires fixed "
+                "Bitcoin mining capacity."
+            )
+
+        configured_bitcoin_capacity_mw = (
+            bitcoin_cfg.get(
+                "max_capacity_mw"
+            )
+        )
+
+        if configured_bitcoin_capacity_mw is None:
+            raise ValueError(
+                "bitcoin.max_capacity_mw must be defined "
+                "when Bitcoin mining is enabled."
+            )
+
+        configured_bitcoin_capacity_mw = float(
+            configured_bitcoin_capacity_mw
+        )
+
+        bitcoin_capacity_mw = float(
+            n.generators.at[
+                bitcoin_asset,
+                "p_nom",
+            ]
+        )
+
+        capacity_tolerance_mw = max(
+            1e-9,
+            abs(
+                configured_bitcoin_capacity_mw
+            )
+            * 1e-9,
+        )
+
+        if not np.isclose(
+            bitcoin_capacity_mw,
+            configured_bitcoin_capacity_mw,
+            rtol=0.0,
+            atol=capacity_tolerance_mw,
+        ):
+            raise RuntimeError(
+                "Bitcoin mining capacity does not match "
+                "the scenario configuration: "
+                f"configured={configured_bitcoin_capacity_mw:.6f} MW, "
+                f"network={bitcoin_capacity_mw:.6f} MW."
+            )
+
+        bitcoin_consumption = (
+            n.generators_t.p[
+                bitcoin_asset
+            ]
+        )
+
+        bitcoin_min_dispatch_mw = float(
+            bitcoin_consumption.min()
+        )
+
+        bitcoin_max_dispatch_mw = float(
+            bitcoin_consumption.max()
+        )
+
+        dispatch_tolerance_mw = max(
+            1e-6,
+            bitcoin_capacity_mw
+            * 1e-8,
+        )
+
+        if (
+            bitcoin_min_dispatch_mw
+            < -dispatch_tolerance_mw
+        ):
+            raise RuntimeError(
+                "Bitcoin mining dispatch became negative: "
+                f"minimum={bitcoin_min_dispatch_mw:.6e} MW."
+            )
+
+        if (
+            bitcoin_max_dispatch_mw
+            > bitcoin_capacity_mw
+            + dispatch_tolerance_mw
+        ):
+            raise RuntimeError(
+                "Bitcoin mining dispatch exceeded installed capacity: "
+                f"maximum={bitcoin_max_dispatch_mw:.6f} MW, "
+                f"capacity={bitcoin_capacity_mw:.6f} MW."
+            )
+
+        bitcoin_consumption_mwh = float(
+            (
+                bitcoin_consumption
+                * weights
+            ).sum()
+        )
+
+        modeled_hours = float(
+            weights.sum()
+        )
+
+        if (
+            bitcoin_capacity_mw > 0.0
+            and modeled_hours > 0.0
+        ):
+            bitcoin_utilization_rate = (
+                bitcoin_consumption_mwh
+                / (
+                    bitcoin_capacity_mw
+                    * modeled_hours
+                )
+            )
+
+        bitcoin_full_capacity_hours = float(
+            weights[
+                bitcoin_consumption
+                >= (
+                    0.99
+                    * bitcoin_capacity_mw
+                )
+            ].sum()
+        )
+
+        bitcoin_zero_dispatch_hours = float(
+            weights[
+                bitcoin_consumption
+                <= dispatch_tolerance_mw
+            ].sum()
+        )
+
+        print("\n--- Bitcoin mining validation ---")
+        print(
+            f"Fixed mining capacity: "
+            f"{bitcoin_capacity_mw:.3f} MW"
+        )
+        print(
+            f"Annual electricity use: "
+            f"{bitcoin_consumption_mwh:,.3f} MWh"
+        )
+        print(
+            f"Utilization: "
+            f"{bitcoin_utilization_rate * 100.0:.3f}%"
+        )
+        print(
+            f"Minimum dispatch: "
+            f"{bitcoin_min_dispatch_mw:.6f} MW"
+        )
+        print(
+            f"Maximum dispatch: "
+            f"{bitcoin_max_dispatch_mw:.6f} MW"
+        )
+        print(
+            f"Equivalent full-capacity hours: "
+            f"{bitcoin_consumption_mwh / bitcoin_capacity_mw:.2f} h"
+        )
+        print(
+            f"Hours >=99% capacity: "
+            f"{bitcoin_full_capacity_hours:.2f} h"
+        )
+        print(
+            f"Zero-dispatch hours: "
+            f"{bitcoin_zero_dispatch_hours:.2f} h"
+        )
+        print("---------------------------------\n")
 
     # -------------------------------------------------------------------------
     # Battery quantities
@@ -729,6 +961,12 @@ def validate_solution(
             electricity_balance
             + battery_discharge_output
             - battery_charge_input
+        )
+
+    if bitcoin_enabled:
+        electricity_balance = (
+            electricity_balance
+            - bitcoin_consumption
         )
 
     hydrogen_balance = (

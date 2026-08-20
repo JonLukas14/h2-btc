@@ -81,12 +81,6 @@ def build_test_network(cfg, data_dir):
     # -------------------------------------------------------------------------
 
 
-    if bitcoin_enabled:
-        raise NotImplementedError(
-            "Bitcoin mining is enabled in the scenario, but the Bitcoin "
-            "subsystem has not yet been implemented in the off-grid model."
-        )
-
     if hydrogen_storage_enabled:
         raise NotImplementedError(
             "Hydrogen storage is enabled in the scenario, but H2 storage "
@@ -621,7 +615,174 @@ def build_test_network(cfg, data_dir):
 
 
     # -------------------------------------------------------------------------
-    # 12. Add electrolyzer
+    # 12. Add flexible Bitcoin mining sink
+    # -------------------------------------------------------------------------
+    #
+    # Bitcoin mining is represented as a controllable electricity consumer.
+    #
+    # A PyPSA Generator with sign=-1 consumes electricity from the
+    # electricity bus. Its dispatch can vary freely between zero and the
+    # configured fixed mining capacity.
+    #
+    # The negative marginal cost represents the net operating value obtained
+    # from mining one additional MWh of electricity.
+    #
+    # For the current S2 architecture-validation case, mining capacity is
+    # deliberately fixed rather than optimized because mining CAPEX has not
+    # yet been introduced into the redesigned model.
+    # -------------------------------------------------------------------------
+
+    if bitcoin_enabled:
+        bitcoin_operating_mode = bitcoin_cfg.get(
+            "operating_mode",
+            "economic_dispatch",
+        )
+
+        if bitcoin_operating_mode != "economic_dispatch":
+            raise ValueError(
+                "The current Bitcoin implementation requires "
+                "bitcoin.operating_mode='economic_dispatch'."
+            )
+
+        bitcoin_capacity_mw = bitcoin_cfg.get(
+            "max_capacity_mw"
+        )
+
+        if bitcoin_capacity_mw is None:
+            raise ValueError(
+                "bitcoin.max_capacity_mw must be defined "
+                "when Bitcoin mining is enabled."
+            )
+
+        bitcoin_capacity_mw = float(
+            bitcoin_capacity_mw
+        )
+
+        if bitcoin_capacity_mw <= 0.0:
+            raise ValueError(
+                "bitcoin.max_capacity_mw must be greater than zero."
+            )
+
+        hashprice_eur_per_th_day = float(
+            bitcoin_cfg.get(
+                "hashprice_eur_per_th_day",
+                0.0,
+            )
+        )
+
+        asic_efficiency_j_per_th = float(
+            bitcoin_cfg.get(
+                "asic_efficiency_j_per_th",
+                0.0,
+            )
+        )
+
+        bitcoin_other_opex_eur_per_mwh = float(
+            bitcoin_cfg.get(
+                "other_opex_eur_per_mwh",
+                0.0,
+            )
+        )
+
+        if hashprice_eur_per_th_day < 0.0:
+            raise ValueError(
+                "bitcoin.hashprice_eur_per_th_day "
+                "must be non-negative."
+            )
+
+        if asic_efficiency_j_per_th <= 0.0:
+            raise ValueError(
+                "bitcoin.asic_efficiency_j_per_th "
+                "must be greater than zero."
+            )
+
+        if bitcoin_other_opex_eur_per_mwh < 0.0:
+            raise ValueError(
+                "bitcoin.other_opex_eur_per_mwh "
+                "must be non-negative."
+            )
+
+        # ASIC electrical efficiency:
+        #
+        # J/TH * TH/s = J/s = W
+        #
+        # Convert W per TH/s to MW per TH/s.
+        mw_per_th_per_s = (
+            asic_efficiency_j_per_th
+            / 1e6
+        )
+
+        # Hashprice is quoted per TH/s per day.
+        #
+        # 1 MWh corresponds to operating 1 MW for one hour, i.e. 1/24 day.
+        th_day_per_mwh = (
+            (1.0 / 24.0)
+            / mw_per_th_per_s
+        )
+
+        bitcoin_gross_revenue_eur_per_mwh = (
+            hashprice_eur_per_th_day
+            * th_day_per_mwh
+        )
+
+        bitcoin_net_value_eur_per_mwh = (
+            bitcoin_gross_revenue_eur_per_mwh
+            - bitcoin_other_opex_eur_per_mwh
+        )
+
+        # Regression check for the previously validated conversion:
+        #
+        # 16 J/TH and 0.08 EUR/(TH/s)/day
+        # -> 2604.1667 TH-day/MWh
+        # -> 208.3333 EUR/MWh gross revenue.
+        if (
+            abs(
+                asic_efficiency_j_per_th
+                - 16.0
+            )
+            < 1e-9
+            and abs(
+                hashprice_eur_per_th_day
+                - 0.08
+            )
+            < 1e-9
+            and abs(
+                bitcoin_other_opex_eur_per_mwh
+            )
+            < 1e-9
+        ):
+            assert abs(
+                th_day_per_mwh
+                - 2604.166666666667
+            ) < 1e-9
+
+            assert abs(
+                bitcoin_gross_revenue_eur_per_mwh
+                - 208.33333333333334
+            ) < 1e-9
+
+        if "bitcoin_mining" not in n.carriers.index:
+            n.add(
+                "Carrier",
+                "bitcoin_mining",
+            )
+
+        n.add(
+            "Generator",
+            "bitcoin_mining_sink",
+            bus="electricity_bus",
+            carrier="bitcoin_mining",
+            sign=-1.0,
+            p_nom=bitcoin_capacity_mw,
+            p_nom_extendable=False,
+            p_min_pu=0.0,
+            p_max_pu=1.0,
+            marginal_cost=-bitcoin_net_value_eur_per_mwh,
+        )
+
+
+    # -------------------------------------------------------------------------
+    # 13. Add electrolyzer
     # -------------------------------------------------------------------------
     electrolyzer_efficiency = get_cost(
         "electrolysis",
@@ -669,7 +830,7 @@ def build_test_network(cfg, data_dir):
     )
 
     # -------------------------------------------------------------------------
-    # 13. Add flexible hydrogen delivery
+    # 14. Add flexible hydrogen delivery
     # -------------------------------------------------------------------------
     #
     # Hydrogen leaves the modeled plant through a flexible delivery sink.
@@ -755,7 +916,7 @@ def build_test_network(cfg, data_dir):
     )
 
     # -------------------------------------------------------------------------
-    # 14. Diagnostics
+    # 15. Diagnostics
     # -------------------------------------------------------------------------
     print("\n================================================")
     print("OFF-GRID NETWORK BUILT")
@@ -846,6 +1007,38 @@ def build_test_network(cfg, data_dir):
 
 
 
+
+    if bitcoin_enabled:
+        print("\nBitcoin mining:")
+        print(
+            f"  Fixed mining capacity: "
+            f"{bitcoin_capacity_mw:.3f} MW"
+        )
+        print(
+            f"  ASIC efficiency: "
+            f"{asic_efficiency_j_per_th:.3f} J/TH"
+        )
+        print(
+            f"  Hashprice: "
+            f"{hashprice_eur_per_th_day:.4f} "
+            f"EUR/(TH/s)/day"
+        )
+        print(
+            f"  TH-day per MWh: "
+            f"{th_day_per_mwh:.6f}"
+        )
+        print(
+            f"  Gross revenue: "
+            f"{bitcoin_gross_revenue_eur_per_mwh:.6f} EUR/MWh"
+        )
+        print(
+            f"  Variable mining OPEX: "
+            f"{bitcoin_other_opex_eur_per_mwh:.6f} EUR/MWh"
+        )
+        print(
+            f"  Net operating value: "
+            f"{bitcoin_net_value_eur_per_mwh:.6f} EUR/MWh"
+        )
 
     print("\nComponents:")
     print(

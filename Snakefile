@@ -5,6 +5,7 @@
 SCENARIOS = [
     "s0_reference",
     "s1_battery",
+    "s2_bitcoin",
 ]
 
 # Select scenario from the command line, e.g.:

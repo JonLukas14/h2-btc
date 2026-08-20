@@ -23,3 +23,6 @@ Thumbs.db
 
 # Generated S1 scenario inputs
 data/s1_battery/
+
+# Generated S2 scenario inputs
+data/s2_bitcoin/

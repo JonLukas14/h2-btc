@@ -195,12 +195,7 @@ if hydrogen_mode != "production_target":
 # These checks will deliberately be relaxed when S1/S2/S3 are implemented.
 
 
-if bitcoin_enabled:
-    raise NotImplementedError(
-        "Bitcoin analysis has not yet been implemented. "
-        "Current analysis scope is S0."
-    )
-
+# Bitcoin analysis is implemented for the current fixed-capacity S2 validation case.
 if hydrogen_storage_enabled:
     raise NotImplementedError(
         "Hydrogen-storage analysis has not yet been implemented "
@@ -624,6 +619,226 @@ if battery_enabled:
     )
 
 # =============================================================================
+# 11b. Bitcoin mining quantities
+# =============================================================================
+bitcoin_asset = "bitcoin_mining_sink"
+
+bitcoin_consumption_mw = pd.Series(
+    0.0,
+    index=n.snapshots,
+    dtype=float,
+)
+
+bitcoin_capacity_mw = 0.0
+bitcoin_min_dispatch_mw = 0.0
+bitcoin_max_dispatch_mw = 0.0
+
+bitcoin_hashprice_eur_per_th_day = 0.0
+bitcoin_asic_efficiency_j_per_th = np.nan
+bitcoin_other_opex_eur_per_mwh = 0.0
+
+bitcoin_mw_per_th_per_s = np.nan
+bitcoin_th_day_per_mwh = np.nan
+bitcoin_gross_revenue_eur_per_mwh = 0.0
+bitcoin_net_value_eur_per_mwh = 0.0
+
+bitcoin_consumption_mwh = 0.0
+bitcoin_utilization_rate = np.nan
+bitcoin_equivalent_full_load_hours = 0.0
+bitcoin_full_capacity_hours = 0.0
+bitcoin_zero_dispatch_hours = 0.0
+
+bitcoin_gross_revenue_eur = 0.0
+bitcoin_variable_opex_eur = 0.0
+bitcoin_net_operating_value_eur = 0.0
+
+
+if bitcoin_enabled:
+    if bitcoin_asset not in n.generators.index:
+        raise KeyError(
+            "Bitcoin is enabled but Generator "
+            "'bitcoin_mining_sink' is missing."
+        )
+
+    bitcoin_sign = float(
+        n.generators.at[
+            bitcoin_asset,
+            "sign",
+        ]
+    )
+
+    if not np.isclose(
+        bitcoin_sign,
+        -1.0,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise RuntimeError(
+            "Bitcoin mining sink must use sign=-1."
+        )
+
+    if bool(
+        n.generators.at[
+            bitcoin_asset,
+            "p_nom_extendable",
+        ]
+    ):
+        raise RuntimeError(
+            "Current S2 validation requires fixed "
+            "Bitcoin mining capacity."
+        )
+
+    bitcoin_capacity_mw = float(
+        n.generators.at[
+            bitcoin_asset,
+            "p_nom",
+        ]
+    )
+
+    configured_bitcoin_capacity_mw = (
+        bitcoin_cfg.get(
+            "max_capacity_mw"
+        )
+    )
+
+    if configured_bitcoin_capacity_mw is None:
+        raise ValueError(
+            "bitcoin.max_capacity_mw must be defined."
+        )
+
+    configured_bitcoin_capacity_mw = float(
+        configured_bitcoin_capacity_mw
+    )
+
+    if not np.isclose(
+        bitcoin_capacity_mw,
+        configured_bitcoin_capacity_mw,
+        rtol=0.0,
+        atol=max(
+            1e-9,
+            abs(bitcoin_capacity_mw) * 1e-9,
+        ),
+    ):
+        raise RuntimeError(
+            "Bitcoin capacity differs from configuration."
+        )
+
+    bitcoin_consumption_mw = (
+        n.generators_t.p[
+            bitcoin_asset
+        ]
+        .reindex(n.snapshots)
+    )
+
+    bitcoin_min_dispatch_mw = float(
+        bitcoin_consumption_mw.min()
+    )
+
+    bitcoin_max_dispatch_mw = float(
+        bitcoin_consumption_mw.max()
+    )
+
+    dispatch_tolerance_mw = max(
+        1e-6,
+        bitcoin_capacity_mw * 1e-8,
+    )
+
+    if (
+        bitcoin_min_dispatch_mw
+        < -dispatch_tolerance_mw
+    ):
+        raise RuntimeError(
+            "Bitcoin mining dispatch became negative: "
+            f"{bitcoin_min_dispatch_mw:.6e} MW."
+        )
+
+    if (
+        bitcoin_max_dispatch_mw
+        > bitcoin_capacity_mw
+        + dispatch_tolerance_mw
+    ):
+        raise RuntimeError(
+            "Bitcoin mining dispatch exceeded capacity."
+        )
+
+    bitcoin_hashprice_eur_per_th_day = float(
+        bitcoin_cfg.get(
+            "hashprice_eur_per_th_day",
+            0.0,
+        )
+    )
+
+    bitcoin_asic_efficiency_j_per_th = float(
+        bitcoin_cfg.get(
+            "asic_efficiency_j_per_th",
+            0.0,
+        )
+    )
+
+    bitcoin_other_opex_eur_per_mwh = float(
+        bitcoin_cfg.get(
+            "other_opex_eur_per_mwh",
+            0.0,
+        )
+    )
+
+    if bitcoin_hashprice_eur_per_th_day < 0.0:
+        raise ValueError(
+            "Bitcoin hashprice must be non-negative."
+        )
+
+    if bitcoin_asic_efficiency_j_per_th <= 0.0:
+        raise ValueError(
+            "Bitcoin ASIC efficiency must be positive."
+        )
+
+    if bitcoin_other_opex_eur_per_mwh < 0.0:
+        raise ValueError(
+            "Bitcoin variable OPEX must be non-negative."
+        )
+
+    bitcoin_mw_per_th_per_s = (
+        bitcoin_asic_efficiency_j_per_th
+        / 1e6
+    )
+
+    bitcoin_th_day_per_mwh = (
+        (1.0 / 24.0)
+        / bitcoin_mw_per_th_per_s
+    )
+
+    bitcoin_gross_revenue_eur_per_mwh = (
+        bitcoin_hashprice_eur_per_th_day
+        * bitcoin_th_day_per_mwh
+    )
+
+    bitcoin_net_value_eur_per_mwh = (
+        bitcoin_gross_revenue_eur_per_mwh
+        - bitcoin_other_opex_eur_per_mwh
+    )
+
+    network_net_value_eur_per_mwh = (
+        -float(
+            n.generators.at[
+                bitcoin_asset,
+                "marginal_cost",
+            ]
+        )
+    )
+
+    if not np.isclose(
+        network_net_value_eur_per_mwh,
+        bitcoin_net_value_eur_per_mwh,
+        rtol=0.0,
+        atol=1e-8,
+    ):
+        raise RuntimeError(
+            "Bitcoin marginal cost does not match "
+            "the configured mining value."
+        )
+
+
+# =============================================================================
 # 12. Annual energy totals
 # =============================================================================
 solar_generation_mwh = weighted_sum(
@@ -650,6 +865,69 @@ hydrogen_output_mwh = weighted_sum(
 hydrogen_delivered_mwh = weighted_sum(
     hydrogen_delivery_mw
 )
+
+bitcoin_consumption_mwh = weighted_sum(
+    bitcoin_consumption_mw
+)
+
+if bitcoin_enabled:
+    bitcoin_weights = (
+        n.snapshot_weightings.generators
+        .reindex(n.snapshots)
+    )
+
+    modeled_hours = float(
+        bitcoin_weights.sum()
+    )
+
+    if (
+        bitcoin_capacity_mw > 0.0
+        and modeled_hours > 0.0
+    ):
+        bitcoin_utilization_rate = (
+            bitcoin_consumption_mwh
+            / (
+                bitcoin_capacity_mw
+                * modeled_hours
+            )
+        )
+
+        bitcoin_equivalent_full_load_hours = (
+            bitcoin_consumption_mwh
+            / bitcoin_capacity_mw
+        )
+
+    bitcoin_full_capacity_hours = float(
+        bitcoin_weights[
+            bitcoin_consumption_mw
+            >= 0.99 * bitcoin_capacity_mw
+        ].sum()
+    )
+
+    bitcoin_zero_dispatch_hours = float(
+        bitcoin_weights[
+            bitcoin_consumption_mw
+            <= max(
+                1e-6,
+                bitcoin_capacity_mw * 1e-8,
+            )
+        ].sum()
+    )
+
+    bitcoin_gross_revenue_eur = (
+        bitcoin_consumption_mwh
+        * bitcoin_gross_revenue_eur_per_mwh
+    )
+
+    bitcoin_variable_opex_eur = (
+        bitcoin_consumption_mwh
+        * bitcoin_other_opex_eur_per_mwh
+    )
+
+    bitcoin_net_operating_value_eur = (
+        bitcoin_gross_revenue_eur
+        - bitcoin_variable_opex_eur
+    )
 
 if battery_enabled:
     battery_charge_input_mwh = weighted_sum(
@@ -965,6 +1243,7 @@ electricity_balance_mw = (
     + battery_discharge_output_mw
     - electrolyzer_input_mw
     - battery_charge_input_mw
+    - bitcoin_consumption_mw
 )
 
 hydrogen_balance_mw = (
@@ -1023,13 +1302,47 @@ annualized_fixed_cost_eur = float(
     n.statistics.capex().sum()
 )
 
+# PyPSA's OPEX statistic contains the Bitcoin sink's negative
+# marginal-cost contribution when Bitcoin is enabled.
+#
+# Therefore this is the NET variable contribution to the objective.
 variable_operating_cost_eur = float(
     n.statistics.opex().sum()
 )
 
-system_cost_eur = (
+# Add the Bitcoin net operating value back to recover variable
+# operating costs of all non-Bitcoin assets.
+non_bitcoin_variable_operating_cost_eur = (
+    variable_operating_cost_eur
+    + bitcoin_net_operating_value_eur
+)
+
+# Gross expenditure includes physical system expenditure and explicit
+# non-electric Bitcoin variable OPEX, but excludes mining revenue.
+gross_variable_operating_cost_eur = (
+    non_bitcoin_variable_operating_cost_eur
+    + bitcoin_variable_opex_eur
+)
+
+gross_system_expenditure_eur = (
     annualized_fixed_cost_eur
-    + variable_operating_cost_eur
+    + gross_variable_operating_cost_eur
+)
+
+net_system_cost_eur = (
+    gross_system_expenditure_eur
+    - bitcoin_gross_revenue_eur
+)
+
+# Backward-compatible name used by S0/S1 and existing output code.
+#
+# With Bitcoin disabled:
+#     system_cost_eur == gross_system_expenditure_eur
+#
+# With Bitcoin enabled:
+#     system_cost_eur == net_system_cost_eur
+system_cost_eur = (
+    net_system_cost_eur
 )
 
 objective_eur = float(
@@ -1038,14 +1351,36 @@ objective_eur = float(
 
 objective_cost_difference_eur = (
     objective_eur
-    - system_cost_eur
+    - net_system_cost_eur
 )
 
 
-lcoh_eur_per_kg_h2 = (
-    system_cost_eur
+net_system_cost_eur_per_kg_h2 = (
+    net_system_cost_eur
     / hydrogen_delivered_kg
     if hydrogen_delivered_kg > 0
+    else np.nan
+)
+
+gross_system_expenditure_eur_per_kg_h2 = (
+    gross_system_expenditure_eur
+    / hydrogen_delivered_kg
+    if hydrogen_delivered_kg > 0
+    else np.nan
+)
+
+# Conventional LCOH is retained only for scenarios without Bitcoin revenue.
+#
+# Once Bitcoin is enabled, the integrated-system economics have a different
+# allocation boundary. In those scenarios, use:
+#
+#   gross_system_expenditure_eur_per_kg_h2
+#   net_system_cost_eur_per_kg_h2
+#
+# rather than interpreting net cost after BTC revenue as LCOH.
+lcoh_eur_per_kg_h2 = (
+    net_system_cost_eur_per_kg_h2
+    if not bitcoin_enabled
     else np.nan
 )
 
@@ -1134,6 +1469,16 @@ if battery_enabled:
             "battery_store": "Battery storage",
         }
     )
+
+
+if bitcoin_enabled:
+    cost_assets.append(
+        "bitcoin_mining_sink"
+    )
+
+    cost_labels[
+        "bitcoin_mining_sink"
+    ] = "Bitcoin mining (net value)"
 
 
 cost_breakdown = pd.DataFrame(
@@ -1321,6 +1666,39 @@ if not np.isclose(
     )
 
 
+if bitcoin_enabled:
+    if not np.isclose(
+        bitcoin_th_day_per_mwh,
+        (
+            (1.0 / 24.0)
+            / (
+                bitcoin_asic_efficiency_j_per_th
+                / 1e6
+            )
+        ),
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        raise RuntimeError(
+            "Bitcoin TH-day/MWh conversion validation failed."
+        )
+
+    expected_bitcoin_net_value = (
+        bitcoin_gross_revenue_eur_per_mwh
+        - bitcoin_other_opex_eur_per_mwh
+    )
+
+    if not np.isclose(
+        bitcoin_net_value_eur_per_mwh,
+        expected_bitcoin_net_value,
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        raise RuntimeError(
+            "Bitcoin net-value validation failed."
+        )
+
+
 # =============================================================================
 # 20. Dispatch time-series table
 # =============================================================================
@@ -1398,6 +1776,11 @@ if battery_enabled:
     dispatch_timeseries[
         "battery_soc_mwh"
     ] = battery_soc_mwh
+
+dispatch_timeseries[
+    "bitcoin_consumption_mw"
+] = bitcoin_consumption_mw
+
 
 # =============================================================================
 # 21. Component tables
@@ -1503,6 +1886,11 @@ summary = pd.DataFrame(
             battery_duration_h
         ],
 
+        # Bitcoin capacity
+        "bitcoin_capacity_mw": [
+            bitcoin_capacity_mw
+        ],
+
         # Electricity
         "solar_generation_mwh": [
             solar_generation_mwh
@@ -1572,6 +1960,49 @@ summary = pd.DataFrame(
             battery_soc_max_mwh
         ],
 
+        # Bitcoin operation
+        "bitcoin_consumption_mwh": [
+            bitcoin_consumption_mwh
+        ],
+        "bitcoin_utilization_rate": [
+            bitcoin_utilization_rate
+        ],
+        "bitcoin_equivalent_full_load_hours": [
+            bitcoin_equivalent_full_load_hours
+        ],
+        "bitcoin_full_capacity_hours": [
+            bitcoin_full_capacity_hours
+        ],
+        "bitcoin_zero_dispatch_hours": [
+            bitcoin_zero_dispatch_hours
+        ],
+        "bitcoin_min_dispatch_mw": [
+            bitcoin_min_dispatch_mw
+        ],
+        "bitcoin_max_dispatch_mw": [
+            bitcoin_max_dispatch_mw
+        ],
+
+        # Bitcoin operating assumptions
+        "bitcoin_hashprice_eur_per_th_day": [
+            bitcoin_hashprice_eur_per_th_day
+        ],
+        "bitcoin_asic_efficiency_j_per_th": [
+            bitcoin_asic_efficiency_j_per_th
+        ],
+        "bitcoin_th_day_per_mwh": [
+            bitcoin_th_day_per_mwh
+        ],
+        "bitcoin_gross_revenue_eur_per_mwh": [
+            bitcoin_gross_revenue_eur_per_mwh
+        ],
+        "bitcoin_other_opex_eur_per_mwh": [
+            bitcoin_other_opex_eur_per_mwh
+        ],
+        "bitcoin_net_value_eur_per_mwh": [
+            bitcoin_net_value_eur_per_mwh
+        ],
+
         # Capacity factors
         "solar_availability_cf": [
             solar_availability_cf
@@ -1622,8 +2053,37 @@ summary = pd.DataFrame(
         "system_cost_eur_per_year": [
             system_cost_eur
         ],
+        "net_system_cost_eur_per_kg_h2": [
+            net_system_cost_eur_per_kg_h2
+        ],
         "lcoh_eur_per_kg_h2": [
             lcoh_eur_per_kg_h2
+        ],
+
+        "non_bitcoin_variable_operating_cost_eur_per_year": [
+            non_bitcoin_variable_operating_cost_eur
+        ],
+        "gross_variable_operating_cost_eur_per_year": [
+            gross_variable_operating_cost_eur
+        ],
+        "gross_system_expenditure_eur_per_year": [
+            gross_system_expenditure_eur
+        ],
+        "net_system_cost_eur_per_year": [
+            net_system_cost_eur
+        ],
+        "gross_system_expenditure_eur_per_kg_h2": [
+            gross_system_expenditure_eur_per_kg_h2
+        ],
+
+        "bitcoin_gross_revenue_eur_per_year": [
+            bitcoin_gross_revenue_eur
+        ],
+        "bitcoin_variable_opex_eur_per_year": [
+            bitcoin_variable_opex_eur
+        ],
+        "bitcoin_net_operating_value_eur_per_year": [
+            bitcoin_net_operating_value_eur
         ],
 
         "battery_inverter_fixed_cost_eur_per_year": [
@@ -1779,6 +2239,14 @@ if battery_enabled:
     ] = {
         "asset": "Battery",
         "capacity_mw": battery_power_mw,
+    }
+
+if bitcoin_enabled:
+    capacity_plot.loc[
+        len(capacity_plot)
+    ] = {
+        "asset": "Bitcoin mining",
+        "capacity_mw": bitcoin_capacity_mw,
     }
 
 fig, ax = plt.subplots(
@@ -1965,6 +2433,19 @@ plt.close(fig)
 # =============================================================================
 cost_plot = cost_breakdown.copy()
 
+# Bitcoin's negative marginal-cost contribution is revenue / operating
+# value rather than a physical-system expenditure. Keep it in
+# cost_breakdown.csv for transparent objective accounting, but present
+# BTC economics separately from the physical-system expenditure chart.
+if bitcoin_enabled:
+    cost_plot = (
+        cost_plot.loc[
+            cost_plot["asset"]
+            != "bitcoin_mining_sink"
+        ]
+        .copy()
+    )
+
 cost_plot[
     "fixed_meur"
 ] = (
@@ -2021,8 +2502,17 @@ ax.set_ylabel(
     "Annual cost [million EUR/a]"
 )
 
+if bitcoin_enabled:
+    cost_plot_title = (
+        "Annualized Physical-System Expenditure by Asset"
+    )
+else:
+    cost_plot_title = (
+        "Annualized System Cost by Asset"
+    )
+
 ax.set_title(
-    "Annualized System Cost by Asset"
+    cost_plot_title
 )
 
 ax.legend()
@@ -2242,42 +2732,323 @@ else:
 
 
 # =============================================================================
-# 30. Interactive Plotly dashboard
+# 29b. Static Bitcoin mining plots
 # =============================================================================
-if battery_enabled:
-    dashboard_rows = 4
+if bitcoin_enabled:
 
-    dashboard_titles = (
-        "Annual Cost by Asset",
-        "Annual Renewable Generation",
-        "Optimized Power Capacities",
-        "Capacity Factors",
-        "Renewable Curtailment",
-        "Hydrogen Target vs Delivery",
-        "Annual Battery Operation",
-        "Battery State of Charge",
+    # -------------------------------------------------------------------------
+    # Hourly Bitcoin electricity consumption
+    # -------------------------------------------------------------------------
+    fig, ax = plt.subplots(
+        figsize=(11, 4.5),
+        dpi=160,
     )
 
-else:
-    dashboard_rows = 3
+    ax.plot(
+        n.snapshots,
+        bitcoin_consumption_mw,
+        label="BTC mining dispatch",
+    )
 
-    dashboard_titles = (
-        "Annual Cost by Asset",
-        "Annual Renewable Generation",
-        "Optimized Power Capacities",
-        "Capacity Factors",
-        "Renewable Curtailment",
-        "Hydrogen Target vs Delivery",
+    ax.axhline(
+        bitcoin_capacity_mw,
+        linestyle="--",
+        linewidth=1.0,
+        label="Installed mining capacity",
+    )
+
+    ax.set_title(
+        "Bitcoin Mining Electricity Consumption"
+    )
+
+    ax.set_xlabel(
+        "Time"
+    )
+
+    ax.set_ylabel(
+        "Electricity consumption [MW]"
+    )
+
+    ax.set_ylim(
+        bottom=0.0,
+    )
+
+    ax.legend()
+
+    ax.spines["top"].set_visible(
+        False
+    )
+
+    ax.spines["right"].set_visible(
+        False
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        OUTDIR / "bitcoin_dispatch.png",
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+
+    # -------------------------------------------------------------------------
+    # Bitcoin utilization summary
+    # -------------------------------------------------------------------------
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(11, 4.5),
+        dpi=160,
+    )
+
+    utilization_bar = axes[0].bar(
+        ["BTC utilization"],
+        [
+            bitcoin_utilization_rate
+            * 100.0
+        ],
+    )
+
+    axes[0].set_title(
+        "Mining Capacity Utilization"
+    )
+
+    axes[0].set_ylabel(
+        "Utilization [%]"
+    )
+
+    axes[0].set_ylim(
+        0.0,
+        100.0,
+    )
+
+    axes[0].bar_label(
+        utilization_bar,
+        fmt="%.2f%%",
+        padding=3,
+    )
+
+
+    bitcoin_hour_labels = [
+        "Full-load\nhours",
+        ">=99%\ncapacity",
+        "Zero\ndispatch",
+    ]
+
+    bitcoin_hour_values = [
+        bitcoin_equivalent_full_load_hours,
+        bitcoin_full_capacity_hours,
+        bitcoin_zero_dispatch_hours,
+    ]
+
+    hour_bars = axes[1].bar(
+        bitcoin_hour_labels,
+        bitcoin_hour_values,
+    )
+
+    axes[1].set_title(
+        "Annual Mining Operation"
+    )
+
+    axes[1].set_ylabel(
+        "Hours [h/a]"
+    )
+
+    axes[1].bar_label(
+        hour_bars,
+        fmt="%.0f",
+        padding=3,
+    )
+
+    for ax in axes:
+        ax.spines["top"].set_visible(
+            False
+        )
+
+        ax.spines["right"].set_visible(
+            False
+        )
+
+    fig.suptitle(
+        "Bitcoin Mining Utilization"
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        OUTDIR / "bitcoin_utilization.png",
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+
+    # -------------------------------------------------------------------------
+    # Integrated-system economics with Bitcoin
+    # -------------------------------------------------------------------------
+    bitcoin_economics_plot = pd.DataFrame(
+        {
+            "metric": [
+                "Gross system\nexpenditure",
+                "BTC gross\nrevenue",
+                "Net system\ncost",
+            ],
+            "value_meur": [
+                gross_system_expenditure_eur
+                / 1e6,
+                bitcoin_gross_revenue_eur
+                / 1e6,
+                net_system_cost_eur
+                / 1e6,
+            ],
+        }
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(8, 4.5),
+        dpi=160,
+    )
+
+    bars = ax.bar(
+        bitcoin_economics_plot[
+            "metric"
+        ],
+        bitcoin_economics_plot[
+            "value_meur"
+        ],
+    )
+
+    ax.set_title(
+        "Integrated-System Economics with Bitcoin Mining"
+    )
+
+    ax.set_ylabel(
+        "Annual value [million EUR/a]"
+    )
+
+    ax.bar_label(
+        bars,
+        fmt="%.3f",
+        padding=3,
+    )
+
+    ax.spines["top"].set_visible(
+        False
+    )
+
+    ax.spines["right"].set_visible(
+        False
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        OUTDIR / "bitcoin_economics.png",
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+else:
+    # Remove Bitcoin-specific figures if a non-Bitcoin scenario is
+    # analyzed into a directory that previously contained them.
+    for bitcoin_plot_file in [
+        "bitcoin_dispatch.png",
+        "bitcoin_utilization.png",
+        "bitcoin_economics.png",
+    ]:
+        path = (
+            OUTDIR
+            / bitcoin_plot_file
+        )
+
+        if path.exists():
+            path.unlink()
+
+
+# =============================================================================
+# 30. Interactive Plotly dashboard
+# =============================================================================
+#
+# Base layout:
+#   rows 1-3 = generic system results
+#
+# Optional rows:
+#   battery = battery operation + SOC
+#   bitcoin = mining dispatch + integrated-system economics
+#
+# This keeps the dashboard valid for S0, S1, S2, and eventually S3.
+# =============================================================================
+
+if bitcoin_enabled:
+    dashboard_cost_title = (
+        "Physical-System Expenditure by Asset"
+    )
+else:
+    dashboard_cost_title = (
+        "Annual Cost by Asset"
+    )
+
+
+dashboard_titles = [
+    dashboard_cost_title,
+    "Annual Renewable Generation",
+    "Optimized Power Capacities",
+    "Capacity Factors",
+    "Renewable Curtailment",
+    "Hydrogen Target vs Delivery",
+]
+
+dashboard_rows = 3
+
+battery_dashboard_row = None
+bitcoin_dashboard_row = None
+
+
+if battery_enabled:
+    dashboard_rows += 1
+
+    battery_dashboard_row = (
+        dashboard_rows
+    )
+
+    dashboard_titles.extend(
+        [
+            "Annual Battery Operation",
+            "Battery State of Charge",
+        ]
+    )
+
+
+if bitcoin_enabled:
+    dashboard_rows += 1
+
+    bitcoin_dashboard_row = (
+        dashboard_rows
+    )
+
+    dashboard_titles.extend(
+        [
+            "Bitcoin Mining Dispatch",
+            "Bitcoin Economic Interaction",
+        ]
     )
 
 
 dashboard = make_subplots(
     rows=dashboard_rows,
     cols=2,
-    subplot_titles=dashboard_titles,
+    subplot_titles=tuple(
+        dashboard_titles
+    ),
 )
 
 
+# -----------------------------------------------------------------------------
+# Row 1 — economics and renewable generation
+# -----------------------------------------------------------------------------
 dashboard.add_trace(
     go.Bar(
         x=cost_plot["label"],
@@ -2287,7 +3058,7 @@ dashboard.add_trace(
             ]
             / 1e6
         ),
-        name="Annual cost",
+        name="Annual expenditure",
     ),
     row=1,
     col=1,
@@ -2307,6 +3078,9 @@ dashboard.add_trace(
 )
 
 
+# -----------------------------------------------------------------------------
+# Row 2 — capacities and utilization
+# -----------------------------------------------------------------------------
 dashboard.add_trace(
     go.Bar(
         x=capacity_plot["asset"],
@@ -2336,18 +3110,34 @@ dashboard.add_trace(
     col=2,
 )
 
+
+dashboard_dispatch_assets = [
+    "Solar",
+    "Wind",
+    "Electrolyzer",
+]
+
+dashboard_dispatch_values = [
+    solar_dispatch_cf,
+    wind_dispatch_cf,
+    electrolyzer_capacity_factor,
+]
+
+
+if bitcoin_enabled:
+    dashboard_dispatch_assets.append(
+        "Bitcoin mining"
+    )
+
+    dashboard_dispatch_values.append(
+        bitcoin_utilization_rate
+    )
+
+
 dashboard.add_trace(
     go.Bar(
-        x=[
-            "Solar",
-            "Wind",
-            "Electrolyzer",
-        ],
-        y=[
-            solar_dispatch_cf,
-            wind_dispatch_cf,
-            electrolyzer_capacity_factor,
-        ],
+        x=dashboard_dispatch_assets,
+        y=dashboard_dispatch_values,
         name="Dispatch / utilization CF",
     ),
     row=2,
@@ -2355,6 +3145,9 @@ dashboard.add_trace(
 )
 
 
+# -----------------------------------------------------------------------------
+# Row 3 — curtailment and hydrogen target
+# -----------------------------------------------------------------------------
 dashboard.add_trace(
     go.Bar(
         x=[
@@ -2391,6 +3184,80 @@ dashboard.add_trace(
 )
 
 
+# -----------------------------------------------------------------------------
+# Optional battery row
+# -----------------------------------------------------------------------------
+if battery_enabled:
+    dashboard.add_trace(
+        go.Bar(
+            x=[
+                "Charge from AC",
+                "Discharge to AC",
+                "Losses",
+            ],
+            y=[
+                battery_charge_input_mwh,
+                battery_discharge_output_mwh,
+                battery_losses_mwh,
+            ],
+            name="Battery operation",
+        ),
+        row=battery_dashboard_row,
+        col=1,
+    )
+
+    dashboard.add_trace(
+        go.Scatter(
+            x=n.snapshots,
+            y=battery_soc_mwh,
+            mode="lines",
+            name="Battery SOC",
+        ),
+        row=battery_dashboard_row,
+        col=2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Optional Bitcoin row
+# -----------------------------------------------------------------------------
+if bitcoin_enabled:
+    dashboard.add_trace(
+        go.Scatter(
+            x=n.snapshots,
+            y=bitcoin_consumption_mw,
+            mode="lines",
+            name="BTC dispatch",
+        ),
+        row=bitcoin_dashboard_row,
+        col=1,
+    )
+
+    dashboard.add_trace(
+        go.Bar(
+            x=[
+                "Gross expenditure",
+                "BTC revenue",
+                "Net system cost",
+            ],
+            y=[
+                gross_system_expenditure_eur
+                / 1e6,
+                bitcoin_gross_revenue_eur
+                / 1e6,
+                net_system_cost_eur
+                / 1e6,
+            ],
+            name="BTC economics",
+        ),
+        row=bitcoin_dashboard_row,
+        col=2,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Axis labels
+# -----------------------------------------------------------------------------
 dashboard.update_yaxes(
     title_text="million EUR/a",
     row=1,
@@ -2427,16 +3294,31 @@ dashboard.update_yaxes(
     col=2,
 )
 
+
 if battery_enabled:
     dashboard.update_yaxes(
         title_text="MWh/a",
-        row=4,
+        row=battery_dashboard_row,
         col=1,
     )
 
     dashboard.update_yaxes(
         title_text="MWh",
-        row=4,
+        row=battery_dashboard_row,
+        col=2,
+    )
+
+
+if bitcoin_enabled:
+    dashboard.update_yaxes(
+        title_text="MW",
+        row=bitcoin_dashboard_row,
+        col=1,
+    )
+
+    dashboard.update_yaxes(
+        title_text="million EUR/a",
+        row=bitcoin_dashboard_row,
         col=2,
     )
 
@@ -2446,10 +3328,18 @@ dashboard.update_layout(
         "Off-grid Scenario Results: "
         f"{cfg['scenario_name']}"
     ),
-    height=1200,
+    height=(
+        1200
+        + max(
+            0,
+            dashboard_rows - 3,
+        )
+        * 300
+    ),
     width=1300,
     template="plotly_white",
 )
+
 
 dashboard.write_html(
     OUTDIR / "results_dashboard.html",
@@ -2595,6 +3485,54 @@ if battery_enabled:
     )
 
 
+if bitcoin_enabled:
+    print("\nBitcoin mining:")
+    print(
+        f"  Fixed capacity:     "
+        f"{bitcoin_capacity_mw:.3f} MW"
+    )
+    print(
+        f"  Electricity use:    "
+        f"{bitcoin_consumption_mwh:,.3f} MWh/a"
+    )
+    print(
+        f"  Utilization:        "
+        f"{bitcoin_utilization_rate * 100.0:.3f}%"
+    )
+    print(
+        f"  Full-load hours:    "
+        f"{bitcoin_equivalent_full_load_hours:,.2f} h/a"
+    )
+    print(
+        f"  >=99% capacity:     "
+        f"{bitcoin_full_capacity_hours:,.0f} h/a"
+    )
+    print(
+        f"  Zero dispatch:      "
+        f"{bitcoin_zero_dispatch_hours:,.0f} h/a"
+    )
+    print(
+        f"  Gross value:        "
+        f"{bitcoin_gross_revenue_eur_per_mwh:.3f} EUR/MWh"
+    )
+    print(
+        f"  Net value:          "
+        f"{bitcoin_net_value_eur_per_mwh:.3f} EUR/MWh"
+    )
+    print(
+        f"  Gross revenue:      "
+        f"{bitcoin_gross_revenue_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Variable BTC OPEX:  "
+        f"{bitcoin_variable_opex_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Net operating value:"
+        f" {bitcoin_net_operating_value_eur:,.2f} EUR/a"
+    )
+
+
 print("\nCurtailment:")
 print(
     f"  Solar:             "
@@ -2614,18 +3552,50 @@ print(
     f"  Annual fixed cost: "
     f"{annualized_fixed_cost_eur:,.2f} EUR/a"
 )
-print(
-    f"  Variable OPEX:     "
-    f"{variable_operating_cost_eur:,.2f} EUR/a"
-)
-print(
-    f"  System cost:       "
-    f"{system_cost_eur:,.2f} EUR/a"
-)
-print(
-    f"  LCOH:              "
-    f"{lcoh_eur_per_kg_h2:.4f} EUR/kg_H2"
-)
+
+if bitcoin_enabled:
+    print(
+        f"  Non-BTC var. OPEX: "
+        f"{non_bitcoin_variable_operating_cost_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  BTC variable OPEX: "
+        f"{bitcoin_variable_opex_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Gross expenditure: "
+        f"{gross_system_expenditure_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  BTC gross revenue: "
+        f"{bitcoin_gross_revenue_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Net system cost:   "
+        f"{net_system_cost_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Gross cost / kg H2:"
+        f" {gross_system_expenditure_eur_per_kg_h2:.4f} EUR/kg_H2"
+    )
+    print(
+        f"  Net cost / kg H2:  "
+        f"{net_system_cost_eur_per_kg_h2:.4f} EUR/kg_H2"
+    )
+
+else:
+    print(
+        f"  Variable OPEX:     "
+        f"{variable_operating_cost_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  System cost:       "
+        f"{system_cost_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  LCOH:              "
+        f"{lcoh_eur_per_kg_h2:.4f} EUR/kg_H2"
+    )
 
 print("\nValidation:")
 print(
@@ -2661,6 +3631,12 @@ if battery_enabled:
     print("  Battery bus balance: PASS")
     print("  Battery coupling:    PASS")
     print("  Battery SOC bounds:  PASS")
+
+if bitcoin_enabled:
+    print("  Bitcoin capacity:    PASS")
+    print("  Bitcoin dispatch:    PASS")
+    print("  Bitcoin conversion:  PASS")
+    print("  Bitcoin economics:   PASS")
 
 print("================================================")
 
