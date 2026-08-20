@@ -26,3 +26,6 @@ data/s1_battery/
 
 # Generated S2 scenario inputs
 data/s2_bitcoin/
+
+# Generated S3 scenario inputs
+data/s3_battery_bitcoin/
