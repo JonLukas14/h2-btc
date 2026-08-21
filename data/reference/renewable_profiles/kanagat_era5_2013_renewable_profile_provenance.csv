@@ -1,0 +1,3 @@
+technology,site,region,country,representative_lat,representative_lon,era5_grid_lat,era5_grid_lon,dataset,weather_year,resolution,hours,atlite_version,conversion_method,technology_definition,orientation,correction_factor,clip_threshold,mean_cf,full_load_hours,sha256
+solar,Kanagat,Mangystau,Kazakhstan,42.3152,54.8139,42.3,54.9,ERA5,2013,hourly,8760,0.4.1,pv,CSi,latitude_optimal,1.0,0.01,0.1738242195810959,1522.7001635304,cbfbc30aabb06fd9b91e0467fde5b49426032f99ff31beb9351cb3353a95ab1c
+onwind,Kanagat,Mangystau,Kazakhstan,42.3152,54.8139,42.3,54.9,ERA5,2013,hourly,8760,0.4.1,wind,Vestas_V112_3MW,,1.0,0.01,0.39582935517852735,3467.4651513638996,99779456696ff69ec14396306104d93d4e44bfd592bb116729ad8046332f75ee
