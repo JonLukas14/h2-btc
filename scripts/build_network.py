@@ -352,6 +352,128 @@ def build_test_network(cfg, data_dir):
             + annualized_fom
         )
 
+    def get_electrolyzer_annualized_capital_cost():
+        """
+        Return the electrolyzer annualized fixed cost in EUR/MW_el/year.
+
+        Backward-compatible behavior:
+        if no electrolyzer-specific economic overrides are configured,
+        use the generic technology-data 'electrolysis' row exactly as
+        before.
+
+        Thesis behavior:
+        CAPEX, FOM and plant lifetime may be supplied explicitly under
+        the hydrogen configuration. These three parameters form one
+        consistent techno-economic parameter set and must therefore be
+        provided together.
+        """
+
+        override_keys = [
+            "electrolyzer_capex_eur_per_kw",
+            "electrolyzer_fom_percent_per_year",
+            "electrolyzer_lifetime_years",
+        ]
+
+        configured = {
+            key: hydrogen_cfg.get(key)
+            for key in override_keys
+        }
+
+        provided = [
+            key
+            for key, value in configured.items()
+            if value is not None
+        ]
+
+        # No thesis-specific override:
+        # preserve the frozen validation implementation.
+        if not provided:
+            return get_annualized_capital_cost(
+                "electrolysis"
+            )
+
+        # Prevent accidental mixing of PEM and generic alkaline
+        # techno-economic assumptions.
+        if len(provided) != len(override_keys):
+            missing = [
+                key
+                for key in override_keys
+                if configured[key] is None
+            ]
+
+            raise ValueError(
+                "Electrolyzer economic overrides must be provided "
+                "as a complete CAPEX/FOM/lifetime parameter set. "
+                f"Missing: {missing}"
+            )
+
+        capex_eur_per_kw = float(
+            configured[
+                "electrolyzer_capex_eur_per_kw"
+            ]
+        )
+
+        fom_percent = float(
+            configured[
+                "electrolyzer_fom_percent_per_year"
+            ]
+        )
+
+        lifetime_years = float(
+            configured[
+                "electrolyzer_lifetime_years"
+            ]
+        )
+
+        if capex_eur_per_kw <= 0.0:
+            raise ValueError(
+                "hydrogen.electrolyzer_capex_eur_per_kw "
+                "must be greater than zero."
+            )
+
+        if fom_percent < 0.0:
+            raise ValueError(
+                "hydrogen.electrolyzer_fom_percent_per_year "
+                "must be non-negative."
+            )
+
+        if lifetime_years <= 0.0:
+            raise ValueError(
+                "hydrogen.electrolyzer_lifetime_years "
+                "must be greater than zero."
+            )
+
+        discount_rate = float(
+            costs_cfg.get(
+                "discount_rate",
+                0.07,
+            )
+        )
+
+        investment_eur_per_mw = (
+            capex_eur_per_kw
+            * 1000.0
+        )
+
+        annualized_capex = (
+            investment_eur_per_mw
+            * annuity(
+                discount_rate,
+                lifetime_years,
+            )
+        )
+
+        annualized_fom = (
+            investment_eur_per_mw
+            * fom_percent
+            / 100.0
+        )
+
+        return (
+            annualized_capex
+            + annualized_fom
+        )
+
     # -------------------------------------------------------------------------
     # 10. Add renewable generators
     # -------------------------------------------------------------------------
@@ -677,6 +799,13 @@ def build_test_network(cfg, data_dir):
             )
         )
 
+        bitcoin_pue = float(
+            bitcoin_cfg.get(
+                "pue",
+                1.0,
+            )
+        )
+
         bitcoin_other_opex_eur_per_mwh = float(
             bitcoin_cfg.get(
                 "other_opex_eur_per_mwh",
@@ -696,19 +825,25 @@ def build_test_network(cfg, data_dir):
                 "must be greater than zero."
             )
 
+        if bitcoin_pue < 1.0:
+            raise ValueError(
+                "bitcoin.pue must be greater than "
+                "or equal to 1.0."
+            )
+
         if bitcoin_other_opex_eur_per_mwh < 0.0:
             raise ValueError(
                 "bitcoin.other_opex_eur_per_mwh "
                 "must be non-negative."
             )
 
-        # ASIC electrical efficiency:
+        # Facility-side electricity requirement.
         #
-        # J/TH * TH/s = J/s = W
-        #
-        # Convert W per TH/s to MW per TH/s.
+        # ASIC efficiency is defined at miner wall power.
+        # PUE accounts for additional facility auxiliaries.
         mw_per_th_per_s = (
             asic_efficiency_j_per_th
+            * bitcoin_pue
             / 1e6
         )
 
@@ -745,9 +880,13 @@ def build_test_network(cfg, data_dir):
                 hashprice_eur_per_th_day
                 - 0.08
             )
-            < 1e-9
             and abs(
                 bitcoin_other_opex_eur_per_mwh
+            )
+            < 1e-9
+            and abs(
+                bitcoin_pue
+                - 1.0
             )
             < 1e-9
         ):
@@ -823,8 +962,8 @@ def build_test_network(cfg, data_dir):
         carrier="electrolyzer",
         p_nom_extendable=True,
         efficiency=electrolyzer_efficiency,
-        capital_cost=get_annualized_capital_cost(
-            "electrolysis"
+        capital_cost=(
+            get_electrolyzer_annualized_capital_cost()
         ),
         marginal_cost=electrolyzer_vom,
     )

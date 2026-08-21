@@ -775,6 +775,13 @@ if bitcoin_enabled:
         )
     )
 
+    bitcoin_pue = float(
+        bitcoin_cfg.get(
+            "pue",
+            1.0,
+        )
+    )
+
     bitcoin_other_opex_eur_per_mwh = float(
         bitcoin_cfg.get(
             "other_opex_eur_per_mwh",
@@ -792,6 +799,12 @@ if bitcoin_enabled:
             "Bitcoin ASIC efficiency must be positive."
         )
 
+    if bitcoin_pue < 1.0:
+        raise ValueError(
+            "Bitcoin PUE must be greater than "
+            "or equal to 1.0."
+        )
+
     if bitcoin_other_opex_eur_per_mwh < 0.0:
         raise ValueError(
             "Bitcoin variable OPEX must be non-negative."
@@ -799,6 +812,7 @@ if bitcoin_enabled:
 
     bitcoin_mw_per_th_per_s = (
         bitcoin_asic_efficiency_j_per_th
+        * bitcoin_pue
         / 1e6
     )
 
@@ -1673,6 +1687,7 @@ if bitcoin_enabled:
             (1.0 / 24.0)
             / (
                 bitcoin_asic_efficiency_j_per_th
+                * bitcoin_pue
                 / 1e6
             )
         ),
