@@ -329,14 +329,18 @@ def build_solar_cf():
         source
     )
 
-    if "solar_cf" not in df.columns:
+    if "solar_cf" in df.columns:
+        source_column = "solar_cf"
+    elif "capacity_factor" in df.columns:
+        source_column = "capacity_factor"
+    else:
         raise KeyError(
-            f"{source} does not contain "
-            "'solar_cf'."
+            f"{source} does not contain either "
+            "'solar_cf' or 'capacity_factor'."
         )
 
     cf = validate_capacity_factor(
-        df["solar_cf"],
+        df[source_column],
         "solar_cf",
     )
 
@@ -345,10 +349,28 @@ def build_solar_cf():
         / "kz_solar_cf.csv"
     )
 
-    shutil.copyfile(
-        source,
-        out,
-    )
+    # Preserve the frozen validation-file behavior exactly when the
+    # legacy model-specific column already exists.
+    if source_column == "solar_cf":
+        shutil.copyfile(
+            source,
+            out,
+        )
+    else:
+        # Final ERA5 thesis profiles use the generic
+        # 'capacity_factor' schema. Normalize only the column name
+        # required by the downstream model; scientific values remain
+        # unchanged.
+        normalized = df.rename(
+            columns={
+                "capacity_factor": "solar_cf",
+            }
+        )
+
+        normalized.to_csv(
+            out,
+            index=False,
+        )
 
     print(
         f"  Source: {source}"
@@ -385,14 +407,18 @@ def build_wind_cf():
         source
     )
 
-    if "wind_cf" not in df.columns:
+    if "wind_cf" in df.columns:
+        source_column = "wind_cf"
+    elif "capacity_factor" in df.columns:
+        source_column = "capacity_factor"
+    else:
         raise KeyError(
-            f"{source} does not contain "
-            "'wind_cf'."
+            f"{source} does not contain either "
+            "'wind_cf' or 'capacity_factor'."
         )
 
     cf = validate_capacity_factor(
-        df["wind_cf"],
+        df[source_column],
         "wind_cf",
     )
 
@@ -401,10 +427,28 @@ def build_wind_cf():
         / "kz_wind_cf.csv"
     )
 
-    shutil.copyfile(
-        source,
-        out,
-    )
+    # Preserve the frozen validation-file behavior exactly when the
+    # legacy model-specific column already exists.
+    if source_column == "wind_cf":
+        shutil.copyfile(
+            source,
+            out,
+        )
+    else:
+        # Final ERA5 thesis profiles use the generic
+        # 'capacity_factor' schema. Normalize only the column name
+        # required by the downstream model; scientific values remain
+        # unchanged.
+        normalized = df.rename(
+            columns={
+                "capacity_factor": "wind_cf",
+            }
+        )
+
+        normalized.to_csv(
+            out,
+            index=False,
+        )
 
     print(
         f"  Source: {source}"
