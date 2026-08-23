@@ -604,19 +604,37 @@ if battery_enabled:
     )
 
     # Store.p > 0 means discharge from Store to battery bus.
-    battery_store_power_mw = (
-        n.stores_t.p[
-            "battery_store"
-        ]
-        .reindex(n.snapshots)
-    )
+    #
+    # PyPSA may omit Store time-series columns when the optimized
+    # storage capacity is exactly zero. In that valid case, interpret
+    # the missing dispatch and SOC series as zero.
+    if "battery_store" in n.stores_t.p.columns:
+        battery_store_power_mw = (
+            n.stores_t.p[
+                "battery_store"
+            ]
+            .reindex(n.snapshots)
+        )
+    else:
+        battery_store_power_mw = pd.Series(
+            0.0,
+            index=n.snapshots,
+            dtype=float,
+        )
 
-    battery_soc_mwh = (
-        n.stores_t.e[
-            "battery_store"
-        ]
-        .reindex(n.snapshots)
-    )
+    if "battery_store" in n.stores_t.e.columns:
+        battery_soc_mwh = (
+            n.stores_t.e[
+                "battery_store"
+            ]
+            .reindex(n.snapshots)
+        )
+    else:
+        battery_soc_mwh = pd.Series(
+            0.0,
+            index=n.snapshots,
+            dtype=float,
+        )
 
 # =============================================================================
 # 11b. Bitcoin mining quantities
