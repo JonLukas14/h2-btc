@@ -1,0 +1,211 @@
+# =============================================================================
+# S0 — Off-grid hydrogen reference
+# =============================================================================
+#
+# Purpose:
+#   Reference case for the off-grid H2–Battery–Bitcoin model.
+#
+#   Renewable electricity is generated exclusively by solar PV and wind.
+#   Hydrogen production is the principal required product.
+#
+#   Battery storage: OFF
+#   Bitcoin mining: OFF
+#   Grid connection: NONE
+#
+# S0 will later be compared with:
+#   S1 = H2 + Battery
+#   S2 = H2 + Bitcoin
+#   S3 = H2 + Battery + Bitcoin
+# =============================================================================
+
+scenario_name: s3_thesis_2045_offgrid_h2_battery_bitcoin_kanagat_btc3mw
+
+
+# =============================================================================
+# 1. System definition
+# =============================================================================
+
+system:
+  model_type: off_grid
+
+  # Full hourly year.
+  snapshots: 8760
+
+  # Technology-cost assumption year.
+  investment_year: 2045
+
+  # Historical meteorological year used for renewable availability.
+  weather_year: 2013
+
+
+# =============================================================================
+# 2. Off-grid site / renewable-resource definition
+# =============================================================================
+#
+# Solar and wind must ultimately refer to the SAME off-grid site or a
+# geographically coherent local renewable-energy system.
+#
+# The final Kazakhstan location will be selected and justified separately.
+# Until then, the existing resource preprocessing remains a validation input.
+# =============================================================================
+
+site:
+  country: Kazakhstan
+
+  # Representative renewable-resource location in the Kanagat/Hyrasia area.
+  name: Kanagat
+  latitude: 42.3152
+  longitude: 54.8139
+
+
+# =============================================================================
+# 3. Technology-cost assumptions
+# =============================================================================
+
+costs:
+  active_dataset: costs_2045
+
+  datasets:
+    costs_2045: "technology-data/outputs/costs_2045.csv"
+
+  discount_rate: 0.08
+
+
+# =============================================================================
+# 4. Renewable generation
+# =============================================================================
+
+renewables:
+
+  solar:
+    enabled: true
+    p_nom_extendable: true
+    max_capacity_mw: null
+    profile_file: "data/reference/renewable_profiles/solar_cf_era5_2013_kanagat_csi_latitude_optimal.csv"
+
+  wind:
+    enabled: true
+    p_nom_extendable: true
+    max_capacity_mw: null
+    profile_file: "data/reference/renewable_profiles/wind_cf_era5_2013_kanagat_vestas_v112_3mw.csv"
+
+# =============================================================================
+# 5. Hydrogen production
+# =============================================================================
+
+hydrogen:
+  enabled: true
+
+  # Flexible hourly operation subject to an annual production requirement.
+  mode: production_target
+
+  # Normalized annual hydrogen-production target used consistently
+  # across S0-S3 for comparability.
+  target_annual_kt_h2: 1.0
+
+  # Hydrogen energy basis used to convert mass production to energy.
+  # Must remain consistent with the LHV-based technology-data efficiency.
+  hydrogen_lhv_kwh_per_kg: 33.33
+
+  # 2045 PEMEC parameterization.
+  electrolyzer_capex_eur_per_kw: 612.5
+  electrolyzer_fom_percent_per_year: 2.0
+  electrolyzer_lifetime_years: 25
+  electrolyzer_efficiency: 0.64
+
+  # Linearized PEM stack-replacement throughput cost.
+  electrolyzer_variable_cost_eur_per_mwh: 1.8846153846153846
+
+  # Future model extensions may include:
+  # - minimum load
+  # - ramping
+  # - degradation
+  # - technology-specific efficiency curves
+
+
+# =============================================================================
+# 6. Hydrogen storage
+# =============================================================================
+#
+# Hydrogen storage is intentionally disabled initially.
+# The current research question focuses first on ELECTRICAL battery storage.
+# H2 storage can later be introduced as a controlled sensitivity if required.
+# =============================================================================
+
+hydrogen_storage:
+  enabled: false
+
+
+# =============================================================================
+# 7. Battery storage
+# =============================================================================
+#
+# Disabled in S0.
+# S1 and S3 will enable battery storage.
+#
+# Both battery power [MW] and battery energy [MWh] should ultimately be
+# optimized rather than imposing a fixed storage duration.
+# =============================================================================
+
+battery:
+  enabled: true
+
+  # Battery power and energy capacity are optimized independently.
+  p_nom_extendable: true
+  e_nom_extendable: true
+
+  # End-of-year state of charge equals initial state of charge.
+  cyclic_state_of_charge: true
+
+  # 2045 technology parameters are taken from the active
+  # PyPSA technology-data costs_2045 dataset.
+  inverter_technology: "battery inverter"
+  storage_technology: "battery storage"
+
+  # No standing self-discharge is assumed in the base model.
+  standing_loss: 0.0
+
+
+# =============================================================================
+# 8. Bitcoin mining
+# =============================================================================
+#
+# Disabled in S0.
+#
+# S2 and S3 will enable flexible Bitcoin mining.
+# Bitcoin parameters will later support both:
+#
+#   data_mode: live
+#       Fetch current market/network data.
+#
+#   data_mode: snapshot
+#       Use a stored timestamped data snapshot for thesis reproducibility.
+# =============================================================================
+
+bitcoin:
+  enabled: true
+
+  # Flexible electricity consumer dispatched economically between
+  # zero and the fixed installed mining capacity.
+  operating_mode: economic_dispatch
+
+  # Bitcoin-capacity sensitivity: 3 MW.
+  max_capacity_mw: 3.0
+
+  # Reference ASIC: Antminer S21 XP air-cooled.
+  asic_efficiency_j_per_th: 13.5
+
+  # Facility-side electricity boundary.
+  # PUE accounts for cooling and auxiliary electricity use.
+  pue: 1.05
+
+  # Reference hashprice:
+  # 32 USD_2026/(PH/s)/day normalized to EUR_2020.
+  hashprice_eur_per_th_day: 0.02136352
+
+  # Additional non-electric marginal OPEX is excluded from the
+  # base dispatch case and handled separately in sensitivities/discussion.
+  other_opex_eur_per_mwh: 0.0
+
+  data_mode: snapshot
+  snapshot_file: null
