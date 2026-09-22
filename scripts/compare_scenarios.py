@@ -188,6 +188,30 @@ metrics = [
         1.0,
     ),
     (
+    "bitcoin_installed_miners_equiv",
+    "Equivalent installed Bitcoin miners",
+    "#",
+    1.0,
+    ),
+    (
+        "bitcoin_mean_active_miners_equiv",
+        "Average active Bitcoin miners",
+        "#",
+        1.0,
+    ),
+    (
+        "bitcoin_max_active_miners_equiv",
+        "Maximum active Bitcoin miners",
+        "#",
+        1.0,
+    ),
+    (
+        "bitcoin_installed_hashrate_ph_s",
+        "Installed Bitcoin hashrate",
+        "PH/s",
+        1.0,
+    ),
+    (
         "bitcoin_utilization_rate",
         "Bitcoin utilization",
         "%",

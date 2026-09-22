@@ -7,6 +7,27 @@ import yaml
 
 from build_network import build_test_network
 
+# =============================================================================
+# Bitcoin reference ASIC
+# =============================================================================
+#
+# Reference machine:
+# Bitmain Antminer S21 XP, air-cooled
+#
+# ASIC electrical input:
+#   3.645 kW per miner
+#
+# Facility-side electricity additionally includes PUE:
+#   facility power = ASIC power * PUE
+#
+# IMPORTANT:
+# These values describe the named reference machine used to translate
+# modeled BTC electrical capacity into an equivalent physical miner count.
+# They are not interpreted as a forecast of 2045 ASIC technology.
+#
+BTC_MINER_NAME = "Bitmain Antminer S21 XP Air-cooled"
+BTC_MINER_POWER_KW = 3.645
+BTC_MINER_HASHRATE_TH_S = 270.0
 
 # =============================================================================
 # 1. Parse command-line arguments
@@ -425,14 +446,69 @@ def validate_solution(
 
     bitcoin_capacity_mw = 0.0
     bitcoin_consumption_mwh = 0.0
-    bitcoin_utilization_rate = np.nan
+    bitcoin_utilization_rate = 0.0
+    bitcoin_equivalent_full_capacity_hours = 0.0
     bitcoin_full_capacity_hours = 0.0
     bitcoin_zero_dispatch_hours = 0.0
     bitcoin_max_dispatch_mw = 0.0
     bitcoin_min_dispatch_mw = 0.0
 
+    # Physical Bitcoin-miner interpretation
+    bitcoin_pue = np.nan
+    bitcoin_facility_power_per_miner_kw = np.nan
+
+    bitcoin_installed_miners_equiv = 0.0
+    bitcoin_installed_miners_complete = 0
+
+    bitcoin_max_active_miners_equiv = 0.0
+    bitcoin_mean_active_miners_equiv = 0.0
+
+    bitcoin_installed_hashrate_ph_s = 0.0
+    bitcoin_max_active_hashrate_ph_s = 0.0
+
     if bitcoin_enabled:
         bitcoin_asset = "bitcoin_mining_sink"
+        bitcoin_pue = bitcoin_cfg.get(
+            "pue"
+        )
+
+        if bitcoin_pue is None:
+            raise ValueError(
+                "bitcoin.pue must be defined when "
+                "Bitcoin mining is enabled."
+            )
+
+        bitcoin_pue = float(
+            bitcoin_pue
+        )
+
+        if bitcoin_pue < 1.0:
+            raise ValueError(
+                "bitcoin.pue must be >= 1.0."
+            )
+
+        bitcoin_facility_power_per_miner_kw = (
+            BTC_MINER_POWER_KW
+            * bitcoin_pue
+        )
+
+        implied_asic_efficiency_j_per_th = (
+            BTC_MINER_POWER_KW
+            * 1000.0
+            / BTC_MINER_HASHRATE_TH_S
+        )
+
+        if not np.isclose(
+            implied_asic_efficiency_j_per_th,
+            13.5,
+            rtol=0.0,
+            atol=1e-9,
+        ):
+            raise RuntimeError(
+                "Reference ASIC parameters are internally inconsistent: "
+                f"power/hashrate implies "
+                f"{implied_asic_efficiency_j_per_th:.6f} J/TH."
+            )
 
         if bitcoin_asset not in n.generators.index:
             raise KeyError(
@@ -458,65 +534,156 @@ def validate_solution(
                 f"Actual sign={bitcoin_sign}."
             )
 
-        if bool(
+        # -------------------------------------------------------------
+        # Bitcoin mining capacity mode
+        # -------------------------------------------------------------
+        bitcoin_capacity_mode = str(
+            bitcoin_cfg.get(
+                "capacity_mode",
+                "fixed",
+            )
+        ).strip().lower()
+
+        if bitcoin_capacity_mode not in {
+            "fixed",
+            "endogenous",
+        }:
+            raise ValueError(
+                "bitcoin.capacity_mode must be either "
+                "'fixed' or 'endogenous'."
+            )
+
+        bitcoin_p_nom_extendable = bool(
             n.generators.at[
                 bitcoin_asset,
                 "p_nom_extendable",
             ]
-        ):
-            raise RuntimeError(
-                "The current S2 validation case requires fixed "
-                "Bitcoin mining capacity."
-            )
-
-        configured_bitcoin_capacity_mw = (
-            bitcoin_cfg.get(
-                "max_capacity_mw"
-            )
         )
 
-        if configured_bitcoin_capacity_mw is None:
-            raise ValueError(
-                "bitcoin.max_capacity_mw must be defined "
-                "when Bitcoin mining is enabled."
+        if bitcoin_capacity_mode == "fixed":
+            if bitcoin_p_nom_extendable:
+                raise RuntimeError(
+                    "Bitcoin capacity mode is 'fixed', but "
+                    "bitcoin_mining_sink.p_nom_extendable is True."
+                )
+
+            configured_bitcoin_capacity_mw = (
+                bitcoin_cfg.get(
+                    "max_capacity_mw"
+                )
             )
 
-        configured_bitcoin_capacity_mw = float(
-            configured_bitcoin_capacity_mw
-        )
+            if configured_bitcoin_capacity_mw is None:
+                raise ValueError(
+                    "bitcoin.max_capacity_mw must be defined "
+                    "when bitcoin.capacity_mode='fixed'."
+                )
 
-        bitcoin_capacity_mw = float(
-            n.generators.at[
-                bitcoin_asset,
-                "p_nom",
-            ]
-        )
-
-        capacity_tolerance_mw = max(
-            1e-9,
-            abs(
+            configured_bitcoin_capacity_mw = float(
                 configured_bitcoin_capacity_mw
             )
-            * 1e-9,
+
+            bitcoin_capacity_mw = float(
+                n.generators.at[
+                    bitcoin_asset,
+                    "p_nom",
+                ]
+            )
+
+            capacity_tolerance_mw = max(
+                1e-9,
+                abs(
+                    configured_bitcoin_capacity_mw
+                )
+                * 1e-9,
+            )
+
+            if not np.isclose(
+                bitcoin_capacity_mw,
+                configured_bitcoin_capacity_mw,
+                rtol=0.0,
+                atol=capacity_tolerance_mw,
+            ):
+                raise RuntimeError(
+                    "Bitcoin mining capacity does not match "
+                    "the fixed scenario configuration: "
+                    f"configured="
+                    f"{configured_bitcoin_capacity_mw:.6f} MW, "
+                    f"network="
+                    f"{bitcoin_capacity_mw:.6f} MW."
+                )
+
+        else:
+            if not bitcoin_p_nom_extendable:
+                raise RuntimeError(
+                    "Bitcoin capacity mode is 'endogenous', but "
+                    "bitcoin_mining_sink.p_nom_extendable is False."
+                )
+
+            bitcoin_capacity_mw = float(
+                n.generators.at[
+                    bitcoin_asset,
+                    "p_nom_opt",
+                ]
+            )
+
+            capacity_tolerance_mw = max(
+                1e-9,
+                abs(
+                    bitcoin_capacity_mw
+                )
+                * 1e-9,
+            )
+
+            if (
+                bitcoin_capacity_mw
+                < -capacity_tolerance_mw
+            ):
+                raise RuntimeError(
+                    "Optimized Bitcoin mining capacity became "
+                    f"negative: {bitcoin_capacity_mw:.6e} MW."
+                )
+
+            # Remove harmless negative numerical zero.
+            if abs(
+                bitcoin_capacity_mw
+            ) <= capacity_tolerance_mw:
+                bitcoin_capacity_mw = 0.0
+
+        # -------------------------------------------------------------
+        # Physical miner-count interpretation
+        # -------------------------------------------------------------
+        bitcoin_installed_miners_equiv = (
+            bitcoin_capacity_mw
+            * 1000.0
+            / bitcoin_facility_power_per_miner_kw
         )
 
-        if not np.isclose(
-            bitcoin_capacity_mw,
-            configured_bitcoin_capacity_mw,
-            rtol=0.0,
-            atol=capacity_tolerance_mw,
-        ):
-            raise RuntimeError(
-                "Bitcoin mining capacity does not match "
-                "the scenario configuration: "
-                f"configured={configured_bitcoin_capacity_mw:.6f} MW, "
-                f"network={bitcoin_capacity_mw:.6f} MW."
+        # Complete physical miners that can be installed without
+        # exceeding the modeled facility-side power capacity.
+        bitcoin_installed_miners_complete = int(
+            np.floor(
+                bitcoin_installed_miners_equiv
             )
+        )
+
+        # Installed ASIC hashrate.
+        bitcoin_installed_hashrate_ph_s = (
+            bitcoin_installed_miners_equiv
+            * BTC_MINER_HASHRATE_TH_S
+            / 1000.0
+        )
 
         bitcoin_consumption = (
             n.generators_t.p[
                 bitcoin_asset
             ]
+        )
+
+        bitcoin_active_miners_equiv = (
+            bitcoin_consumption
+            * 1000.0
+            / bitcoin_facility_power_per_miner_kw
         )
 
         bitcoin_min_dispatch_mw = float(
@@ -525,6 +692,9 @@ def validate_solution(
 
         bitcoin_max_dispatch_mw = float(
             bitcoin_consumption.max()
+        )
+        bitcoin_max_active_miners_equiv = float(
+            bitcoin_active_miners_equiv.max()
         )
 
         dispatch_tolerance_mw = max(
@@ -564,6 +734,23 @@ def validate_solution(
             weights.sum()
         )
 
+        if modeled_hours > 0.0:
+            bitcoin_mean_active_miners_equiv = float(
+                (
+                    bitcoin_active_miners_equiv
+                    * weights
+                ).sum()
+                / modeled_hours
+            )
+
+        # Maximum active hashrate
+        bitcoin_max_active_hashrate_ph_s = (
+            bitcoin_max_active_miners_equiv
+            * BTC_MINER_HASHRATE_TH_S
+            / 1000.0
+        )
+
+
         if (
             bitcoin_capacity_mw > 0.0
             and modeled_hours > 0.0
@@ -576,15 +763,20 @@ def validate_solution(
                 )
             )
 
-        bitcoin_full_capacity_hours = float(
-            weights[
-                bitcoin_consumption
-                >= (
-                    0.99
-                    * bitcoin_capacity_mw
-                )
-            ].sum()
-        )
+            bitcoin_equivalent_full_capacity_hours = (
+                bitcoin_consumption_mwh
+                / bitcoin_capacity_mw
+            )
+
+        if bitcoin_capacity_mw > 1e-9:
+            bitcoin_full_capacity_hours = float(
+                weights[
+                    bitcoin_consumption
+                    >= 0.99 * bitcoin_capacity_mw
+                ].sum()
+            )
+        else:
+            bitcoin_full_capacity_hours = 0.0
 
         bitcoin_zero_dispatch_hours = float(
             weights[
@@ -594,38 +786,113 @@ def validate_solution(
         )
 
         print("\n--- Bitcoin mining validation ---")
+
         print(
-            f"Fixed mining capacity: "
-            f"{bitcoin_capacity_mw:.3f} MW"
+            f"Reference ASIC: "
+            f"{BTC_MINER_NAME}"
         )
+
+        print(
+            f"ASIC power: "
+            f"{BTC_MINER_POWER_KW:.3f} kW/miner"
+        )
+
+        print(
+            f"ASIC hashrate: "
+            f"{BTC_MINER_HASHRATE_TH_S:.1f} TH/s/miner"
+        )
+
+        print(
+            f"PUE: "
+            f"{bitcoin_pue:.3f}"
+        )
+
+        print(
+            f"Facility-side power per miner: "
+            f"{bitcoin_facility_power_per_miner_kw:.5f} kW"
+        )
+
+        print(
+            f"Capacity mode: "
+            f"{bitcoin_capacity_mode}"
+        )
+
+        if bitcoin_capacity_mode == "fixed":
+            print(
+                f"Fixed mining capacity: "
+                f"{bitcoin_capacity_mw:.3f} MW"
+            )
+        else:
+            print(
+                f"Optimized mining capacity: "
+                f"{bitcoin_capacity_mw:.3f} MW"
+            )
+
+        print(
+            f"Equivalent installed miners: "
+            f"{bitcoin_installed_miners_equiv:,.2f}"
+        )
+
+        print(
+            f"Complete miners within capacity: "
+            f"{bitcoin_installed_miners_complete:,d}"
+        )
+
+        print(
+            f"Installed hashrate: "
+            f"{bitcoin_installed_hashrate_ph_s:,.3f} PH/s"
+        )
+
         print(
             f"Annual electricity use: "
             f"{bitcoin_consumption_mwh:,.3f} MWh"
         )
+
         print(
             f"Utilization: "
             f"{bitcoin_utilization_rate * 100.0:.3f}%"
         )
+
+        print(
+            f"Average active miners: "
+            f"{bitcoin_mean_active_miners_equiv:,.2f}"
+        )
+
+        print(
+            f"Maximum active miners: "
+            f"{bitcoin_max_active_miners_equiv:,.2f}"
+        )
+
+        print(
+            f"Maximum active hashrate: "
+            f"{bitcoin_max_active_hashrate_ph_s:,.3f} PH/s"
+        )
+
         print(
             f"Minimum dispatch: "
             f"{bitcoin_min_dispatch_mw:.6f} MW"
         )
+
         print(
             f"Maximum dispatch: "
             f"{bitcoin_max_dispatch_mw:.6f} MW"
         )
+
         print(
             f"Equivalent full-capacity hours: "
-            f"{bitcoin_consumption_mwh / bitcoin_capacity_mw:.2f} h"
+            f"{bitcoin_equivalent_full_capacity_hours:.2f} h"
         )
+
         print(
             f"Hours >=99% capacity: "
             f"{bitcoin_full_capacity_hours:.2f} h"
         )
+
         print(
             f"Zero-dispatch hours: "
             f"{bitcoin_zero_dispatch_hours:.2f} h"
         )
+
         print("---------------------------------\n")
 
     # -------------------------------------------------------------------------

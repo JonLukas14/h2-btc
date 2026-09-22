@@ -1,0 +1,56 @@
+scenario_name: s2e_capex250k
+system:
+  model_type: off_grid
+  snapshots: 8760
+  investment_year: 2045
+  weather_year: 2013
+site:
+  country: Kazakhstan
+  name: Kanagat
+  latitude: 42.3152
+  longitude: 54.8139
+costs:
+  active_dataset: costs_2045
+  datasets:
+    costs_2045: technology-data/outputs/costs_2045.csv
+  discount_rate: 0.08
+renewables:
+  solar:
+    enabled: true
+    p_nom_extendable: true
+    max_capacity_mw: null
+    profile_file: data/reference/renewable_profiles/solar_cf_era5_2013_kanagat_csi_latitude_optimal.csv
+  wind:
+    enabled: true
+    p_nom_extendable: true
+    max_capacity_mw: null
+    profile_file: data/reference/renewable_profiles/wind_cf_era5_2013_kanagat_vestas_v112_3mw.csv
+hydrogen:
+  enabled: true
+  mode: production_target
+  target_annual_kt_h2: 1.0
+  hydrogen_lhv_kwh_per_kg: 33.33
+  electrolyzer_capex_eur_per_kw: 612.5
+  electrolyzer_fom_percent_per_year: 2.0
+  electrolyzer_lifetime_years: 25
+  electrolyzer_efficiency: 0.64
+  electrolyzer_variable_cost_eur_per_mwh: 1.8846153846153846
+hydrogen_storage:
+  enabled: false
+battery:
+  enabled: false
+  p_nom_extendable: true
+  e_nom_extendable: true
+  cyclic_state_of_charge: true
+bitcoin:
+  enabled: true
+  operating_mode: economic_dispatch
+  capacity_mode: endogenous
+  max_capacity_mw: null
+  annualized_capacity_cost_eur_per_mw_year: 250000.0
+  asic_efficiency_j_per_th: 13.5
+  pue: 1.05
+  hashprice_eur_per_th_day: 0.02136352
+  other_opex_eur_per_mwh: 0.0
+  data_mode: snapshot
+  snapshot_file: null

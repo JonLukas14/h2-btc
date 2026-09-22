@@ -192,6 +192,9 @@ def build_test_network(cfg, data_dir):
     if battery_enabled:
         carriers.append("battery")
 
+    if bitcoin_enabled:
+        carriers.append("bitcoin_mining")
+
     n.add(
         "Carrier",
         carriers,
@@ -766,24 +769,80 @@ def build_test_network(cfg, data_dir):
                 "bitcoin.operating_mode='economic_dispatch'."
             )
 
-        bitcoin_capacity_mw = bitcoin_cfg.get(
-            "max_capacity_mw"
-        )
+        # -------------------------------------------------------------
+        # Bitcoin mining capacity formulation
+        # -------------------------------------------------------------
+        #
+        # fixed:
+        #   Preserve the existing S2/S3 formulation exactly.
+        #
+        # endogenous:
+        #   Mining capacity becomes an investment decision variable.
+        #   A defensible mining-capacity cost must be supplied before
+        #   this mode can be solved.
+        #
+        bitcoin_capacity_mode = str(
+            bitcoin_cfg.get(
+                "capacity_mode",
+                "fixed",
+            )
+        ).strip().lower()
 
-        if bitcoin_capacity_mw is None:
+        if bitcoin_capacity_mode not in {
+            "fixed",
+            "endogenous",
+        }:
             raise ValueError(
-                "bitcoin.max_capacity_mw must be defined "
-                "when Bitcoin mining is enabled."
+                "bitcoin.capacity_mode must be either "
+                "'fixed' or 'endogenous'."
             )
 
-        bitcoin_capacity_mw = float(
-            bitcoin_capacity_mw
-        )
+        bitcoin_capacity_mw = 0.0
+        bitcoin_capacity_annual_cost_eur_per_mw = 0.0
 
-        if bitcoin_capacity_mw <= 0.0:
-            raise ValueError(
-                "bitcoin.max_capacity_mw must be greater than zero."
+        if bitcoin_capacity_mode == "fixed":
+            configured_capacity_mw = bitcoin_cfg.get(
+                "max_capacity_mw"
             )
+
+            if configured_capacity_mw is None:
+                raise ValueError(
+                    "bitcoin.max_capacity_mw must be defined "
+                    "when bitcoin.capacity_mode='fixed'."
+                )
+
+            bitcoin_capacity_mw = float(
+                configured_capacity_mw
+            )
+
+            if bitcoin_capacity_mw <= 0.0:
+                raise ValueError(
+                    "bitcoin.max_capacity_mw must be greater "
+                    "than zero when bitcoin.capacity_mode='fixed'."
+                )
+
+        else:
+            configured_capacity_cost = bitcoin_cfg.get(
+                "annualized_capacity_cost_eur_per_mw_year"
+            )
+
+            if configured_capacity_cost is None:
+                raise ValueError(
+                    "bitcoin.annualized_capacity_cost_eur_per_mw_year "
+                    "must be defined when "
+                    "bitcoin.capacity_mode='endogenous'."
+                )
+
+            bitcoin_capacity_annual_cost_eur_per_mw = float(
+                configured_capacity_cost
+            )
+
+            if bitcoin_capacity_annual_cost_eur_per_mw <= 0.0:
+                raise ValueError(
+                    "bitcoin.annualized_capacity_cost_eur_per_mw_year "
+                    "must be greater than zero for endogenous "
+                    "Bitcoin capacity."
+                )
 
         hashprice_eur_per_th_day = float(
             bitcoin_cfg.get(
@@ -900,25 +959,48 @@ def build_test_network(cfg, data_dir):
                 - 208.33333333333334
             ) < 1e-9
 
-        if "bitcoin_mining" not in n.carriers.index:
+        # -------------------------------------------------------------
+        # Add Bitcoin mining electricity sink
+        # -------------------------------------------------------------
+        #
+        # fixed:
+        #   Preserve the existing S2/S3 architecture exactly.
+        #
+        # endogenous:
+        #   Installed mining capacity becomes an optimization variable.
+        #   The annualized mining-capacity cost is included through
+        #   Generator.capital_cost.
+        #
+        if bitcoin_capacity_mode == "fixed":
             n.add(
-                "Carrier",
-                "bitcoin_mining",
+                "Generator",
+                "bitcoin_mining_sink",
+                bus="electricity_bus",
+                carrier="bitcoin_mining",
+                sign=-1.0,
+                p_nom=bitcoin_capacity_mw,
+                p_nom_extendable=False,
+                p_min_pu=0.0,
+                p_max_pu=1.0,
+                capital_cost=0.0,
+                marginal_cost=-bitcoin_net_value_eur_per_mwh,
             )
 
-        n.add(
-            "Generator",
-            "bitcoin_mining_sink",
-            bus="electricity_bus",
-            carrier="bitcoin_mining",
-            sign=-1.0,
-            p_nom=bitcoin_capacity_mw,
-            p_nom_extendable=False,
-            p_min_pu=0.0,
-            p_max_pu=1.0,
-            marginal_cost=-bitcoin_net_value_eur_per_mwh,
-        )
-
+        else:
+            n.add(
+                "Generator",
+                "bitcoin_mining_sink",
+                bus="electricity_bus",
+                carrier="bitcoin_mining",
+                sign=-1.0,
+                p_nom=0.0,
+                p_nom_extendable=True,
+                p_nom_min=0.0,
+                p_min_pu=0.0,
+                p_max_pu=1.0,
+                capital_cost=bitcoin_capacity_annual_cost_eur_per_mw,
+                marginal_cost=-bitcoin_net_value_eur_per_mwh,
+            )
 
     # -------------------------------------------------------------------------
     # 13. Add electrolyzer
@@ -1150,9 +1232,20 @@ def build_test_network(cfg, data_dir):
     if bitcoin_enabled:
         print("\nBitcoin mining:")
         print(
-            f"  Fixed mining capacity: "
-            f"{bitcoin_capacity_mw:.3f} MW"
+            f"  Capacity mode: "
+            f"{bitcoin_capacity_mode}"
         )
+
+        if bitcoin_capacity_mode == "fixed":
+            print(
+                f"  Fixed mining capacity: "
+                f"{bitcoin_capacity_mw:.3f} MW"
+            )
+        else:
+            print(
+                f"  Annualized capacity cost: "
+                f"{bitcoin_capacity_annual_cost_eur_per_mw:.2f} EUR/MW/a"
+            )
         print(
             f"  ASIC efficiency: "
             f"{asic_efficiency_j_per_th:.3f} J/TH"
