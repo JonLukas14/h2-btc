@@ -116,22 +116,21 @@ def get_hydrogen_target_mwh(cfg):
 
 
 # =============================================================================
-# 4. Custom annual hydrogen-production constraint
+# 4. Annual hydrogen-delivery expression and custom constraints
 # =============================================================================
-def add_hydrogen_target_constraint(
+def get_annual_hydrogen_delivery_expression(
     n,
     snapshots,
-    cfg,
 ):
     """
-    Require annual hydrogen delivery to equal the configured annual target.
+    Return the weighted annual hydrogen-delivery Linopy expression.
 
-    hydrogen_delivery is modeled as a Generator with sign=-1 on the
-    hydrogen bus. Its dispatch variable is therefore positive when hydrogen
-    leaves the modeled plant.
+    hydrogen_delivery is represented as a Generator with sign=-1 on the
+    hydrogen bus. Its dispatch variable is positive when hydrogen leaves
+    the modeled plant.
 
-    Snapshot weighting is included so that this formulation remains correct
-    if temporal aggregation is introduced later.
+    Snapshot weighting is included explicitly so that the expression remains
+    correct if temporal aggregation is introduced later.
     """
 
     if "hydrogen_delivery" not in n.generators.index:
@@ -139,12 +138,6 @@ def add_hydrogen_target_constraint(
             "Generator 'hydrogen_delivery' is missing from the network."
         )
 
-    target_mwh_h2 = get_hydrogen_target_mwh(
-        cfg
-    )
-
-    # Generator dispatch variable:
-    # dimensions = (snapshot, name)
     generator_dispatch = n.model[
         "Generator-p"
     ]
@@ -154,8 +147,6 @@ def add_hydrogen_target_constraint(
         .sel(name="hydrogen_delivery")
     )
 
-    # Convert PyPSA snapshot weighting to an xarray object so that
-    # Linopy aligns it explicitly with the snapshot dimension.
     snapshot_weights = xr.DataArray(
         n.snapshot_weightings.generators
         .reindex(snapshots)
@@ -175,6 +166,36 @@ def add_hydrogen_target_constraint(
         "snapshot"
     )
 
+    return annual_hydrogen_delivery
+
+
+def add_hydrogen_target_constraint(
+    n,
+    snapshots,
+    cfg,
+):
+    """
+    Require annual hydrogen delivery to equal the configured annual target.
+
+    hydrogen_delivery is modeled as a Generator with sign=-1 on the
+    hydrogen bus. Its dispatch variable is therefore positive when hydrogen
+    leaves the modeled plant.
+
+    Snapshot weighting is included so that this formulation remains correct
+    if temporal aggregation is introduced later.
+    """
+
+    target_mwh_h2 = get_hydrogen_target_mwh(
+        cfg
+    )
+
+    annual_hydrogen_delivery = (
+        get_annual_hydrogen_delivery_expression(
+            n,
+            snapshots,
+        )
+    )
+
     n.model.add_constraints(
         annual_hydrogen_delivery
         == target_mwh_h2,
@@ -192,6 +213,51 @@ def add_hydrogen_target_constraint(
         "= annual target"
     )
     print("--------------------------------------\n")
+
+def add_hydrogen_minimum_constraint(
+    n,
+    snapshots,
+    minimum_mwh_h2,
+):
+    """
+    Require annual hydrogen delivery to remain at or above the Stage-1
+    HMAX solution during Stage-2 cost minimization.
+    """
+
+    minimum_mwh_h2 = float(
+        minimum_mwh_h2
+    )
+
+    if minimum_mwh_h2 < 0.0:
+        raise ValueError(
+            "minimum_mwh_h2 must be non-negative."
+        )
+
+    annual_hydrogen_delivery = (
+        get_annual_hydrogen_delivery_expression(
+            n,
+            snapshots,
+        )
+    )
+
+    n.model.add_constraints(
+        annual_hydrogen_delivery
+        >= minimum_mwh_h2,
+        name="GlobalConstraint-hydrogen_delivery_minimum",
+    )
+
+    print("\n--- HMAX Stage-2 hydrogen constraint ---")
+    print(
+        f"Minimum annual H2 delivery: "
+        f"{minimum_mwh_h2:,.6f} MWh_H2"
+    )
+    print(
+        "Constraint: "
+        "sum_t(hydrogen_delivery_t * snapshot_weight_t) "
+        ">= Stage-1 HMAX minus numerical tolerance"
+    )
+    print("------------------------------------------\n")
+
 
 # =============================================================================
 # 5. Battery inverter power-capacity coupling constraint
@@ -1511,30 +1577,243 @@ def main():
     )
 
     # -------------------------------------------------------------------------
-    # Add custom optimization constraints
+    # Hydrogen optimization mode
     # -------------------------------------------------------------------------
-    def extra_functionality(
-        network,
-        snapshots,
-    ):
-        add_hydrogen_target_constraint(
+    hydrogen_mode = str(
+        cfg["hydrogen"].get(
+            "mode",
+            "production_target",
+        )
+    ).strip().lower()
+
+    # -------------------------------------------------------------------------
+    # Standard fixed-production-target optimization
+    # -------------------------------------------------------------------------
+    if hydrogen_mode == "production_target":
+
+        def extra_functionality(
             network,
             snapshots,
+        ):
+            add_hydrogen_target_constraint(
+                network,
+                snapshots,
+                cfg,
+            )
+
+            add_battery_power_coupling_constraint(
+                network,
+                cfg,
+            )
+
+        status, condition = n.optimize(
+            solver_name="highs",
+            extra_functionality=extra_functionality,
+            include_objective_constant=False,
+        )
+
+    # -------------------------------------------------------------------------
+    # Two-stage maximum-hydrogen optimization
+    # -------------------------------------------------------------------------
+    elif hydrogen_mode == "maximize_production":
+
+        print(
+            "\n================================================"
+        )
+        print(
+            "HMAX STAGE 1: MAXIMIZE ANNUAL HYDROGEN"
+        )
+        print(
+            "================================================"
+        )
+
+        # Build a separate network for Stage 1 so that the normal economic
+        # objective of the final network remains untouched.
+        n_hmax = build_test_network(
             cfg,
+            data_dir=DATA_DIR,
+        )
+
+        n_hmax.optimize.create_model(
+            include_objective_constant=False,
         )
 
         add_battery_power_coupling_constraint(
-            network,
+            n_hmax,
             cfg,
         )
-    # -------------------------------------------------------------------------
-    # Optimize
-    # -------------------------------------------------------------------------
-    status, condition = n.optimize(
-        solver_name="highs",
-        extra_functionality=extra_functionality,
-        include_objective_constant=False,
-    )
+
+        annual_hydrogen_delivery_stage1 = (
+            get_annual_hydrogen_delivery_expression(
+                n_hmax,
+                n_hmax.snapshots,
+            )
+        )
+
+        # Replace PyPSA's economic objective with pure annual-H2
+        # maximization. Stage 1 is therefore a physical/resource-potential
+        # optimization, not an economic optimization.
+        n_hmax.model.add_objective(
+            annual_hydrogen_delivery_stage1,
+            overwrite=True,
+            sense="max",
+        )
+
+        status_stage1, condition_stage1 = (
+            n_hmax.optimize.solve_model(
+                solver_name="highs",
+            )
+        )
+
+        print(
+            "\nHMAX Stage 1 finished"
+        )
+        print(
+            f"Status: {status_stage1}"
+        )
+        print(
+            f"Condition: {condition_stage1}"
+        )
+
+        if (
+            status_stage1 != "ok"
+            or condition_stage1 != "optimal"
+        ):
+            raise RuntimeError(
+                "HMAX Stage 1 did not solve cleanly: "
+                f"status={status_stage1}, "
+                f"condition={condition_stage1}"
+            )
+
+        stage1_weights = (
+            n_hmax.snapshot_weightings.generators
+            .reindex(n_hmax.snapshots)
+        )
+
+        stage1_hydrogen_delivery_mwh = float(
+            (
+                n_hmax.generators_t.p[
+                    "hydrogen_delivery"
+                ]
+                * stage1_weights
+            ).sum()
+        )
+
+        if (
+            not np.isfinite(
+                stage1_hydrogen_delivery_mwh
+            )
+            or stage1_hydrogen_delivery_mwh <= 0.0
+        ):
+            raise RuntimeError(
+                "HMAX Stage 1 returned a non-positive or "
+                "non-finite annual hydrogen quantity: "
+                f"{stage1_hydrogen_delivery_mwh!r}"
+            )
+
+        # Numerical tolerance only. This follows the same relative scale used
+        # by the existing fixed-target validation and is not a physical or
+        # economic modelling assumption.
+        hmax_tolerance_mwh = max(
+            1e-3,
+            stage1_hydrogen_delivery_mwh
+            * 1e-8,
+        )
+
+        stage2_minimum_hydrogen_mwh = (
+            stage1_hydrogen_delivery_mwh
+            - hmax_tolerance_mwh
+        )
+
+        print(
+            f"Maximum annual H2 from Stage 1: "
+            f"{stage1_hydrogen_delivery_mwh:,.6f} MWh_H2"
+        )
+        print(
+            f"Stage-2 numerical tolerance: "
+            f"{hmax_tolerance_mwh:.6f} MWh_H2"
+        )
+        print(
+            f"Stage-2 minimum H2: "
+            f"{stage2_minimum_hydrogen_mwh:,.6f} MWh_H2"
+        )
+
+        print(
+            "\n================================================"
+        )
+        print(
+            "HMAX STAGE 2: MINIMIZE SYSTEM COST"
+        )
+        print(
+            "================================================"
+        )
+
+        # Rebuild the network from the same deterministic inputs.
+        # This restores PyPSA's normal annualized system-cost objective.
+        n = build_test_network(
+            cfg,
+            data_dir=DATA_DIR,
+        )
+
+        def extra_functionality(
+            network,
+            snapshots,
+        ):
+            add_hydrogen_minimum_constraint(
+                network,
+                snapshots,
+                stage2_minimum_hydrogen_mwh,
+            )
+
+            add_battery_power_coupling_constraint(
+                network,
+                cfg,
+            )
+
+        status, condition = n.optimize(
+            solver_name="highs",
+            extra_functionality=extra_functionality,
+            include_objective_constant=False,
+        )
+
+        # Store Stage-1 information as network metadata so that the analysis
+        # script can report and validate the lexicographic HMAX result later.
+        n.meta = dict(
+            getattr(
+                n,
+                "meta",
+                {},
+            )
+            or {}
+        )
+
+        n.meta[
+            "hydrogen_mode"
+        ] = "maximize_production"
+
+        n.meta[
+            "hmax_stage1_hydrogen_mwh"
+        ] = float(
+            stage1_hydrogen_delivery_mwh
+        )
+
+        n.meta[
+            "hmax_tolerance_mwh"
+        ] = float(
+            hmax_tolerance_mwh
+        )
+
+        n.meta[
+            "hmax_stage2_minimum_hydrogen_mwh"
+        ] = float(
+            stage2_minimum_hydrogen_mwh
+        )
+
+    else:
+        raise ValueError(
+            "Unsupported hydrogen.mode in run_model.py: "
+            f"{hydrogen_mode!r}"
+        )
 
     print("\nOptimization finished")
     print(
