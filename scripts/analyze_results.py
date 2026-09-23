@@ -1212,6 +1212,8 @@ hydrogen_target_achievement = np.nan
 hmax_stage1_hydrogen_mwh = np.nan
 hmax_stage1_hydrogen_kg = np.nan
 hmax_stage1_hydrogen_kt = np.nan
+hmax_relative_tolerance = np.nan
+hmax_absolute_tolerance_mwh = np.nan
 hmax_tolerance_mwh = np.nan
 hmax_stage2_minimum_hydrogen_mwh = np.nan
 hmax_gap_to_stage1_mwh = np.nan
@@ -1283,6 +1285,20 @@ elif hydrogen_mode == "maximize_production":
         ]
     )
 
+    hmax_relative_tolerance = float(
+        network_meta.get(
+            "hmax_relative_tolerance",
+            np.nan,
+        )
+    )
+
+    hmax_absolute_tolerance_mwh = float(
+        network_meta.get(
+            "hmax_absolute_tolerance_mwh",
+            np.nan,
+        )
+    )
+
     hmax_tolerance_mwh = float(
         network_meta[
             "hmax_tolerance_mwh"
@@ -1314,9 +1330,9 @@ elif hydrogen_mode == "maximize_production":
             "HMAX Stage-1 hydrogen production must be positive."
         )
 
-    if hmax_tolerance_mwh <= 0.0:
+    if hmax_tolerance_mwh < 0.0:
         raise RuntimeError(
-            "HMAX numerical tolerance must be positive."
+            "HMAX numerical tolerance must be non-negative."
         )
 
     hmax_stage1_hydrogen_kg = (
@@ -2003,10 +2019,12 @@ elif hydrogen_mode == "maximize_production":
             f"{hmax_stage2_minimum_hydrogen_mwh:.6f} MWh_H2."
         )
 
+    # Solver-feasibility guard only; deliberately much tighter than
+    # the configurable Stage-2 production allowance.
     hmax_validation_tolerance_mwh = max(
-        1e-3,
+        1e-6,
         hmax_stage1_hydrogen_mwh
-        * 1e-8,
+        * 1e-12,
     )
 
     if (
@@ -2338,6 +2356,12 @@ summary = pd.DataFrame(
         ],
         "hmax_stage1_hydrogen_kt": [
             hmax_stage1_hydrogen_kt
+        ],
+        "hmax_relative_tolerance": [
+            hmax_relative_tolerance
+        ],
+        "hmax_absolute_tolerance_mwh": [
+            hmax_absolute_tolerance_mwh
         ],
         "hmax_tolerance_mwh": [
             hmax_tolerance_mwh

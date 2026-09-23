@@ -1448,9 +1448,9 @@ def validate_solution(
                 "HMAX Stage-1 hydrogen production must be positive."
             )
 
-        if hmax_tolerance_mwh <= 0.0:
+        if hmax_tolerance_mwh < 0.0:
             raise RuntimeError(
-                "HMAX numerical tolerance must be positive."
+                "HMAX numerical tolerance must be non-negative."
             )
 
         if hmax_stage2_minimum_hydrogen_mwh <= 0.0:
@@ -1484,10 +1484,13 @@ def validate_solution(
                 f"{hmax_stage2_minimum_hydrogen_mwh:.6f} MWh."
             )
 
+        # Numerical feasibility guard for checking the solved LP.
+        # This is deliberately much tighter than the configurable
+        # Stage-2 HMAX production allowance.
         hmax_validation_tolerance_mwh = max(
-            1e-3,
+            1e-6,
             hmax_stage1_hydrogen_mwh
-            * 1e-8,
+            * 1e-12,
         )
 
         # Stage 2 may use the numerical allowance deliberately, so its
@@ -1897,13 +1900,60 @@ def main():
                 f"{stage1_hydrogen_delivery_mwh!r}"
             )
 
-        # Numerical tolerance only. This follows the same relative scale used
-        # by the existing fixed-target validation and is not a physical or
-        # economic modelling assumption.
+        # ---------------------------------------------------------------------
+        # Configurable lexicographic HMAX tolerance
+        # ---------------------------------------------------------------------
+        # Defaults reproduce the previously validated formulation exactly:
+        #
+        #   max(1e-3 MWh_H2, Stage-1 H2 * 1e-8)
+        #
+        # The parameters are configurable so that the numerical sensitivity
+        # of the Stage-2 solution can be tested explicitly.
+        hmax_cfg = cfg.get(
+            "hydrogen",
+            {},
+        )
+
+        hmax_relative_tolerance = float(
+            hmax_cfg.get(
+                "hmax_relative_tolerance",
+                1e-8,
+            )
+        )
+
+        hmax_absolute_tolerance_mwh = float(
+            hmax_cfg.get(
+                "hmax_absolute_tolerance_mwh",
+                1e-3,
+            )
+        )
+
+        if (
+            not np.isfinite(
+                hmax_relative_tolerance
+            )
+            or hmax_relative_tolerance < 0.0
+        ):
+            raise ValueError(
+                "hydrogen.hmax_relative_tolerance must be "
+                "finite and non-negative."
+            )
+
+        if (
+            not np.isfinite(
+                hmax_absolute_tolerance_mwh
+            )
+            or hmax_absolute_tolerance_mwh < 0.0
+        ):
+            raise ValueError(
+                "hydrogen.hmax_absolute_tolerance_mwh must be "
+                "finite and non-negative."
+            )
+
         hmax_tolerance_mwh = max(
-            1e-3,
+            hmax_absolute_tolerance_mwh,
             stage1_hydrogen_delivery_mwh
-            * 1e-8,
+            * hmax_relative_tolerance,
         )
 
         stage2_minimum_hydrogen_mwh = (
@@ -1916,7 +1966,15 @@ def main():
             f"{stage1_hydrogen_delivery_mwh:,.6f} MWh_H2"
         )
         print(
-            f"Stage-2 numerical tolerance: "
+            f"HMAX relative tolerance: "
+            f"{hmax_relative_tolerance:.12g}"
+        )
+        print(
+            f"HMAX absolute tolerance: "
+            f"{hmax_absolute_tolerance_mwh:.12g} MWh_H2"
+        )
+        print(
+            f"Stage-2 effective tolerance: "
             f"{hmax_tolerance_mwh:.6f} MWh_H2"
         )
         print(
@@ -1981,6 +2039,18 @@ def main():
             "hmax_stage1_hydrogen_mwh"
         ] = float(
             stage1_hydrogen_delivery_mwh
+        )
+
+        n.meta[
+            "hmax_relative_tolerance"
+        ] = float(
+            hmax_relative_tolerance
+        )
+
+        n.meta[
+            "hmax_absolute_tolerance_mwh"
+        ] = float(
+            hmax_absolute_tolerance_mwh
         )
 
         n.meta[
