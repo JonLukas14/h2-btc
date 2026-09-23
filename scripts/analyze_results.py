@@ -1203,6 +1203,36 @@ if hydrogen_lhv_kwh_per_kg <= 0.0:
     )
 
 
+# Optional post-processing water requirement.
+#
+# This parameter is not used by the optimization. If it is absent from
+# a scenario, water KPIs remain NaN so that legacy scenarios continue
+# to analyze without modification.
+configured_water_requirement_l_per_kg_h2 = (
+    hydrogen_cfg.get(
+        "water_requirement_l_per_kg_h2"
+    )
+)
+
+if configured_water_requirement_l_per_kg_h2 is None:
+    water_requirement_l_per_kg_h2 = np.nan
+else:
+    water_requirement_l_per_kg_h2 = float(
+        configured_water_requirement_l_per_kg_h2
+    )
+
+    if (
+        not np.isfinite(
+            water_requirement_l_per_kg_h2
+        )
+        or water_requirement_l_per_kg_h2 <= 0.0
+    ):
+        raise ValueError(
+            "hydrogen.water_requirement_l_per_kg_h2 "
+            "must be finite and positive when defined."
+        )
+
+
 # Defaults used when a quantity is not applicable to the active mode.
 target_annual_kt_h2 = np.nan
 target_annual_kg_h2 = np.nan
@@ -1212,6 +1242,8 @@ hydrogen_target_achievement = np.nan
 hmax_stage1_hydrogen_mwh = np.nan
 hmax_stage1_hydrogen_kg = np.nan
 hmax_stage1_hydrogen_kt = np.nan
+hmax_stage1_water_requirement_m3_per_year = np.nan
+hmax_stage1_water_requirement_km3_per_year = np.nan
 hmax_relative_tolerance = np.nan
 hmax_absolute_tolerance_mwh = np.nan
 hmax_tolerance_mwh = np.nan
@@ -1346,6 +1378,20 @@ elif hydrogen_mode == "maximize_production":
         / 1_000_000.0
     )
 
+    if np.isfinite(
+        water_requirement_l_per_kg_h2
+    ):
+        hmax_stage1_water_requirement_m3_per_year = (
+            hmax_stage1_hydrogen_kg
+            * water_requirement_l_per_kg_h2
+            / 1000.0
+        )
+
+        hmax_stage1_water_requirement_km3_per_year = (
+            hmax_stage1_water_requirement_m3_per_year
+            / 1_000_000_000.0
+        )
+
 
 hydrogen_delivered_kg = (
     hydrogen_delivered_mwh
@@ -1357,6 +1403,24 @@ hydrogen_delivered_kt = (
     hydrogen_delivered_kg
     / 1_000_000.0
 )
+
+
+water_requirement_m3_per_year = np.nan
+water_requirement_km3_per_year = np.nan
+
+if np.isfinite(
+    water_requirement_l_per_kg_h2
+):
+    water_requirement_m3_per_year = (
+        hydrogen_delivered_kg
+        * water_requirement_l_per_kg_h2
+        / 1000.0
+    )
+
+    water_requirement_km3_per_year = (
+        water_requirement_m3_per_year
+        / 1_000_000_000.0
+    )
 
 
 if hydrogen_mode == "production_target":
@@ -2351,11 +2415,20 @@ summary = pd.DataFrame(
         "h2_lhv_kwh_per_kg": [
             hydrogen_lhv_kwh_per_kg
         ],
+        "water_requirement_l_per_kg_h2": [
+            water_requirement_l_per_kg_h2
+        ],
         "hmax_stage1_hydrogen_mwh": [
             hmax_stage1_hydrogen_mwh
         ],
         "hmax_stage1_hydrogen_kt": [
             hmax_stage1_hydrogen_kt
+        ],
+        "hmax_stage1_water_requirement_m3_per_year": [
+            hmax_stage1_water_requirement_m3_per_year
+        ],
+        "hmax_stage1_water_requirement_km3_per_year": [
+            hmax_stage1_water_requirement_km3_per_year
         ],
         "hmax_relative_tolerance": [
             hmax_relative_tolerance
@@ -2497,6 +2570,12 @@ summary = pd.DataFrame(
         ],
         "hydrogen_delivered_kt": [
             hydrogen_delivered_kt
+        ],
+        "water_requirement_m3_per_year": [
+            water_requirement_m3_per_year
+        ],
+        "water_requirement_km3_per_year": [
+            water_requirement_km3_per_year
         ],
         "h2_target_achievement": [
             hydrogen_target_achievement

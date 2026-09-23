@@ -124,6 +124,12 @@ hydrogen:
   # Must remain consistent with the LHV-based technology-data efficiency.
   hydrogen_lhv_kwh_per_kg: 33.33
 
+  # Water requirement used for post-processing only; it does not
+  # constrain the optimization. Derived from Tleubergenova et al.
+  # (2023): 0.036--0.18 km3/a for 2--10 Mt_H2/a corresponds to
+  # 18 L of water per kg_H2.
+  water_requirement_l_per_kg_h2: 18.0
+
   # 2045 PEMEC parameterization.
   electrolyzer_capex_eur_per_kw: 612.5
   electrolyzer_fom_percent_per_year: 2.0
