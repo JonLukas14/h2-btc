@@ -59,10 +59,12 @@ def build_test_network(cfg, data_dir):
         hydrogen_cfg.get("enabled", False)
     )
 
-    hydrogen_mode = hydrogen_cfg.get(
-        "mode",
-        "production_target",
-    )
+    hydrogen_mode = str(
+        hydrogen_cfg.get(
+            "mode",
+            "production_target",
+        )
+    ).strip().lower()
 
     battery_enabled = bool(
         battery_cfg.get("enabled", False)
@@ -93,10 +95,16 @@ def build_test_network(cfg, data_dir):
             "hydrogen.enabled=true."
         )
 
-    if hydrogen_mode != "production_target":
+    supported_hydrogen_modes = {
+        "production_target",
+        "maximize_production",
+    }
+
+    if hydrogen_mode not in supported_hydrogen_modes:
         raise ValueError(
-            "The redesigned off-grid model currently supports only "
-            "hydrogen.mode='production_target'."
+            "Unsupported hydrogen.mode. Expected one of "
+            f"{sorted(supported_hydrogen_modes)}, "
+            f"got {hydrogen_mode!r}."
         )
 
     # -------------------------------------------------------------------------
@@ -489,6 +497,55 @@ def build_test_network(cfg, data_dir):
         "wind",
         {},
     )
+
+    # A hydrogen-production maximization without finite renewable capacity
+    # limits would be unbounded because solar, wind and PEM capacities are
+    # extendable. Therefore every enabled and extendable renewable technology
+    # must have a finite positive capacity limit in maximize_production mode.
+    if hydrogen_mode == "maximize_production":
+        for renewable_name, asset_cfg in (
+            ("solar", solar_cfg),
+            ("wind", wind_cfg),
+        ):
+            renewable_enabled = bool(
+                asset_cfg.get(
+                    "enabled",
+                    True,
+                )
+            )
+
+            renewable_extendable = bool(
+                asset_cfg.get(
+                    "p_nom_extendable",
+                    True,
+                )
+            )
+
+            if (
+                renewable_enabled
+                and renewable_extendable
+            ):
+                max_capacity_mw = asset_cfg.get(
+                    "max_capacity_mw"
+                )
+
+                if max_capacity_mw is None:
+                    raise ValueError(
+                        f"renewables.{renewable_name}.max_capacity_mw "
+                        "must be defined for "
+                        "hydrogen.mode='maximize_production'."
+                    )
+
+                max_capacity_mw = float(
+                    max_capacity_mw
+                )
+
+                if max_capacity_mw <= 0.0:
+                    raise ValueError(
+                        f"renewables.{renewable_name}.max_capacity_mw "
+                        "must be greater than zero for "
+                        "hydrogen.mode='maximize_production'."
+                    )
 
     if bool(solar_cfg.get("enabled", True)):
         solar_kwargs = {}
@@ -1065,25 +1122,6 @@ def build_test_network(cfg, data_dir):
     # leaving the modeled system.
     # -------------------------------------------------------------------------
 
-    target_annual_kt_h2 = hydrogen_cfg.get(
-        "target_annual_kt_h2"
-    )
-
-    if target_annual_kt_h2 is None:
-        raise ValueError(
-            "hydrogen.target_annual_kt_h2 must be defined "
-            "for production_target mode."
-        )
-
-    target_annual_kt_h2 = float(
-        target_annual_kt_h2
-    )
-
-    if target_annual_kt_h2 <= 0.0:
-        raise ValueError(
-            "hydrogen.target_annual_kt_h2 must be greater than zero."
-        )
-
     hydrogen_lhv_kwh_per_kg = float(
         hydrogen_cfg.get(
             "hydrogen_lhv_kwh_per_kg",
@@ -1097,31 +1135,74 @@ def build_test_network(cfg, data_dir):
             "must be greater than zero."
         )
 
-    # 1 kt = 1,000,000 kg.
-    #
-    # kg * kWh/kg / 1000 = MWh
-    target_annual_h2_mwh = (
-        target_annual_kt_h2
-        * 1_000_000.0
-        * hydrogen_lhv_kwh_per_kg
-        / 1000.0
-    )
+    target_annual_kt_h2 = None
+    target_annual_h2_mwh = None
 
-    # hydrogen_delivery is only an accounting boundary through which
-    # produced hydrogen leaves the modeled plant.
-    #
-    # Its nominal capacity is deliberately set high enough that it does
-    # not impose an artificial hourly delivery constraint. The annual
-    # quantity will instead be imposed with a custom Linopy constraint
-    # during optimization.
-    minimum_snapshot_weight = float(
-        n.snapshot_weightings.generators.min()
-    )
+    if hydrogen_mode == "production_target":
+        target_annual_kt_h2 = hydrogen_cfg.get(
+            "target_annual_kt_h2"
+        )
 
-    hydrogen_delivery_p_nom = (
-        target_annual_h2_mwh
-        / minimum_snapshot_weight
-    )
+        if target_annual_kt_h2 is None:
+            raise ValueError(
+                "hydrogen.target_annual_kt_h2 must be defined "
+                "for production_target mode."
+            )
+
+        target_annual_kt_h2 = float(
+            target_annual_kt_h2
+        )
+
+        if target_annual_kt_h2 <= 0.0:
+            raise ValueError(
+                "hydrogen.target_annual_kt_h2 "
+                "must be greater than zero."
+            )
+
+        # 1 kt = 1,000,000 kg.
+        #
+        # kg * kWh/kg / 1000 = MWh
+        target_annual_h2_mwh = (
+            target_annual_kt_h2
+            * 1_000_000.0
+            * hydrogen_lhv_kwh_per_kg
+            / 1000.0
+        )
+
+        # In production_target mode the delivery boundary remains identical
+        # to the frozen S0-S3/S2E/S3E implementation.
+        minimum_snapshot_weight = float(
+            n.snapshot_weightings.generators.min()
+        )
+
+        hydrogen_delivery_p_nom = (
+            target_annual_h2_mwh
+            / minimum_snapshot_weight
+        )
+
+        hydrogen_delivery_kwargs = {
+            "p_nom": hydrogen_delivery_p_nom,
+            "p_nom_extendable": False,
+        }
+
+    elif hydrogen_mode == "maximize_production":
+        # No annual hydrogen target exists in HMAX mode.
+        #
+        # The delivery sink must therefore not be sized from a prescribed
+        # annual quantity. Its capacity is made extendable with zero cost.
+        # run_model.py will subsequently couple the optimization to annual
+        # hydrogen production and perform the HMAX optimization.
+        hydrogen_delivery_kwargs = {
+            "p_nom": 0.0,
+            "p_nom_extendable": True,
+            "p_nom_min": 0.0,
+            "capital_cost": 0.0,
+        }
+
+    else:
+        raise RuntimeError(
+            f"Unexpected hydrogen mode {hydrogen_mode!r}."
+        )
 
     n.add(
         "Generator",
@@ -1129,11 +1210,10 @@ def build_test_network(cfg, data_dir):
         bus="hydrogen_bus",
         carrier="hydrogen_delivery",
         sign=-1.0,
-        p_nom=hydrogen_delivery_p_nom,
-        p_nom_extendable=False,
         p_min_pu=0.0,
         p_max_pu=1.0,
         marginal_cost=0.0,
+        **hydrogen_delivery_kwargs,
     )
 
     # -------------------------------------------------------------------------
@@ -1160,27 +1240,41 @@ def build_test_network(cfg, data_dir):
 
     print("\nHydrogen:")
     print(
-        f"  Electrolyzer efficiency: "
-        f"{electrolyzer_efficiency:.4f}"
+        f"  Mode:                   "
+        f"{hydrogen_mode}"
     )
     print(
-        f"  Annual target [kt]: "
-        f"{target_annual_kt_h2}"
+        f"  Electrolyzer efficiency:"
+        f" {electrolyzer_efficiency:.4f}"
     )
     print(
-        f"  H2 LHV: "
+        f"  H2 LHV:                 "
         f"{hydrogen_lhv_kwh_per_kg:.2f} kWh/kg"
     )
 
-    print(
-        f"  Annual target energy: "
-        f"{target_annual_h2_mwh:.2f} MWh_H2"
-    )
+    if hydrogen_mode == "production_target":
+        print(
+            f"  Annual target [kt]:     "
+            f"{target_annual_kt_h2}"
+        )
+        print(
+            f"  Annual target energy:   "
+            f"{target_annual_h2_mwh:.2f} MWh_H2"
+        )
+        print(
+            "  Annual target constraint: "
+            "added during optimization"
+        )
 
-    print(
-        "  Annual target constraint: "
-        "added during optimization"
-    )
+    elif hydrogen_mode == "maximize_production":
+        print(
+            "  Annual target [kt]:     "
+            "none (endogenous)"
+        )
+        print(
+            "  Annual target constraint: "
+            "not used"
+        )
 
     if battery_enabled:
         print("\nBattery:")
