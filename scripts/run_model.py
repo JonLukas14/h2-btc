@@ -402,11 +402,28 @@ def validate_solution(
     after optimization for S0, battery-enabled S1, and Bitcoin-enabled S2.
     """
 
-    target_mwh_h2 = get_hydrogen_target_mwh(
-        cfg
-    )
-
     hydrogen_cfg = cfg["hydrogen"]
+
+    hydrogen_mode = str(
+        hydrogen_cfg.get(
+            "mode",
+            "production_target",
+        )
+    ).strip().lower()
+
+    if hydrogen_mode == "production_target":
+        target_mwh_h2 = get_hydrogen_target_mwh(
+            cfg
+        )
+
+    elif hydrogen_mode == "maximize_production":
+        target_mwh_h2 = None
+
+    else:
+        raise ValueError(
+            "Unsupported hydrogen.mode during solution validation: "
+            f"{hydrogen_mode!r}"
+        )
 
     battery_cfg = cfg.get(
         "battery",
@@ -1342,22 +1359,167 @@ def validate_solution(
     # -------------------------------------------------------------------------
     # Core numerical validation
     # -------------------------------------------------------------------------
-    target_tolerance_mwh = max(
-        1e-3,
-        target_mwh_h2 * 1e-8,
-    )
+    hmax_stage1_hydrogen_mwh = np.nan
+    hmax_tolerance_mwh = np.nan
+    hmax_stage2_minimum_hydrogen_mwh = np.nan
 
-    if not np.isclose(
-        hydrogen_delivery_mwh,
-        target_mwh_h2,
-        rtol=0.0,
-        atol=target_tolerance_mwh,
-    ):
-        raise RuntimeError(
-            "Annual hydrogen target was not met: "
-            f"target={target_mwh_h2:.6f} MWh, "
-            f"actual={hydrogen_delivery_mwh:.6f} MWh."
+    if hydrogen_mode == "production_target":
+        target_tolerance_mwh = max(
+            1e-3,
+            target_mwh_h2 * 1e-8,
         )
+
+        if not np.isclose(
+            hydrogen_delivery_mwh,
+            target_mwh_h2,
+            rtol=0.0,
+            atol=target_tolerance_mwh,
+        ):
+            raise RuntimeError(
+                "Annual hydrogen target was not met: "
+                f"target={target_mwh_h2:.6f} MWh, "
+                f"actual={hydrogen_delivery_mwh:.6f} MWh."
+            )
+
+    elif hydrogen_mode == "maximize_production":
+        network_meta = dict(
+            getattr(
+                n,
+                "meta",
+                {},
+            )
+            or {}
+        )
+
+        required_hmax_metadata = [
+            "hmax_stage1_hydrogen_mwh",
+            "hmax_tolerance_mwh",
+            "hmax_stage2_minimum_hydrogen_mwh",
+        ]
+
+        missing_hmax_metadata = [
+            key
+            for key in required_hmax_metadata
+            if key not in network_meta
+        ]
+
+        if missing_hmax_metadata:
+            raise RuntimeError(
+                "HMAX validation metadata are missing from the "
+                f"solved network: {missing_hmax_metadata}"
+            )
+
+        hmax_stage1_hydrogen_mwh = float(
+            network_meta[
+                "hmax_stage1_hydrogen_mwh"
+            ]
+        )
+
+        hmax_tolerance_mwh = float(
+            network_meta[
+                "hmax_tolerance_mwh"
+            ]
+        )
+
+        hmax_stage2_minimum_hydrogen_mwh = float(
+            network_meta[
+                "hmax_stage2_minimum_hydrogen_mwh"
+            ]
+        )
+
+        hmax_values = [
+            hmax_stage1_hydrogen_mwh,
+            hmax_tolerance_mwh,
+            hmax_stage2_minimum_hydrogen_mwh,
+            hydrogen_delivery_mwh,
+        ]
+
+        if not all(
+            np.isfinite(value)
+            for value in hmax_values
+        ):
+            raise RuntimeError(
+                "HMAX validation encountered a non-finite "
+                "hydrogen quantity."
+            )
+
+        if hmax_stage1_hydrogen_mwh <= 0.0:
+            raise RuntimeError(
+                "HMAX Stage-1 hydrogen production must be positive."
+            )
+
+        if hmax_tolerance_mwh <= 0.0:
+            raise RuntimeError(
+                "HMAX numerical tolerance must be positive."
+            )
+
+        if hmax_stage2_minimum_hydrogen_mwh <= 0.0:
+            raise RuntimeError(
+                "HMAX Stage-2 minimum hydrogen production "
+                "must be positive."
+            )
+
+        expected_stage2_minimum = (
+            hmax_stage1_hydrogen_mwh
+            - hmax_tolerance_mwh
+        )
+
+        metadata_tolerance_mwh = max(
+            1e-6,
+            hmax_stage1_hydrogen_mwh
+            * 1e-10,
+        )
+
+        if not np.isclose(
+            hmax_stage2_minimum_hydrogen_mwh,
+            expected_stage2_minimum,
+            rtol=0.0,
+            atol=metadata_tolerance_mwh,
+        ):
+            raise RuntimeError(
+                "HMAX metadata are internally inconsistent: "
+                f"stage1={hmax_stage1_hydrogen_mwh:.6f} MWh, "
+                f"tolerance={hmax_tolerance_mwh:.6f} MWh, "
+                f"stage2_minimum="
+                f"{hmax_stage2_minimum_hydrogen_mwh:.6f} MWh."
+            )
+
+        hmax_validation_tolerance_mwh = max(
+            1e-3,
+            hmax_stage1_hydrogen_mwh
+            * 1e-8,
+        )
+
+        # Stage 2 may use the numerical allowance deliberately, so its
+        # production can be slightly below the Stage-1 maximum.
+        if (
+            hydrogen_delivery_mwh
+            + hmax_validation_tolerance_mwh
+            < hmax_stage2_minimum_hydrogen_mwh
+        ):
+            raise RuntimeError(
+                "HMAX Stage-2 hydrogen production fell below "
+                "the required Stage-1 production floor: "
+                f"minimum="
+                f"{hmax_stage2_minimum_hydrogen_mwh:.6f} MWh, "
+                f"actual={hydrogen_delivery_mwh:.6f} MWh."
+            )
+
+        # Conversely, Stage 2 must not materially exceed the Stage-1
+        # physical maximum. Such a result would indicate that Stage 1
+        # was not actually solved to the maximum.
+        if (
+            hydrogen_delivery_mwh
+            - hmax_validation_tolerance_mwh
+            > hmax_stage1_hydrogen_mwh
+        ):
+            raise RuntimeError(
+                "HMAX Stage-2 hydrogen production materially "
+                "exceeded the Stage-1 maximum: "
+                f"stage1="
+                f"{hmax_stage1_hydrogen_mwh:.6f} MWh, "
+                f"stage2={hydrogen_delivery_mwh:.6f} MWh."
+            )
 
     balance_tolerance_mw = 1e-4
 
@@ -1446,10 +1608,26 @@ def validate_solution(
         f"  H2 delivered:            "
         f"{hydrogen_delivery_mwh:,.3f} MWh_H2"
     )
-    print(
-        f"  H2 target:               "
-        f"{target_mwh_h2:,.3f} MWh_H2"
-    )
+    if hydrogen_mode == "production_target":
+        print(
+            f"  H2 target:               "
+            f"{target_mwh_h2:,.3f} MWh_H2"
+        )
+
+    elif hydrogen_mode == "maximize_production":
+        print(
+            f"  HMAX Stage-1 maximum:    "
+            f"{hmax_stage1_hydrogen_mwh:,.3f} MWh_H2"
+        )
+        print(
+            f"  HMAX Stage-2 floor:      "
+            f"{hmax_stage2_minimum_hydrogen_mwh:,.3f} MWh_H2"
+        )
+        print(
+            f"  Gap to Stage-1 maximum:  "
+            f"{hmax_stage1_hydrogen_mwh - hydrogen_delivery_mwh:,.6f} "
+            f"MWh_H2"
+        )
 
     if battery_enabled:
         print("\nBattery operation:")
@@ -1524,7 +1702,15 @@ def validate_solution(
         )
 
     print("\nChecks:")
-    print("  Annual H2 target:        PASS")
+
+    if hydrogen_mode == "production_target":
+        print(
+            "  Annual H2 target:        PASS"
+        )
+    elif hydrogen_mode == "maximize_production":
+        print(
+            "  HMAX production:         PASS"
+        )
     print("  Electricity balance:     PASS")
     print("  Hydrogen balance:        PASS")
 
