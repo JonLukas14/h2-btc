@@ -1,19 +1,24 @@
 # =============================================================================
-# HMAX — Resource-constrained maximum-hydrogen scenario
+# HMAX-B — Resource-constrained maximum-hydrogen scenario with battery
 # =============================================================================
 #
 # Purpose:
-#   Quantify the maximum annual hydrogen-production envelope of the
-#   off-grid Kanagat renewable system under finite PV and wind development
+#   Quantify whether electrical battery storage changes the maximum annual
+#   hydrogen-production envelope or the minimum-cost system design required
+#   to retain that maximum under the adopted Kanagat renewable-development
 #   limits.
 #
 #   Stage 1 maximizes annual hydrogen production.
 #   Stage 2 minimizes annual system cost while retaining the Stage-1
-#   maximum within the numerical HMAX tolerance.
+#   maximum without an intentional hydrogen-production allowance.
 #
-#   Battery storage: OFF
+#   Battery storage: ON
 #   Bitcoin mining: OFF
 #   Grid connection: NONE
+#
+# HMAX-B is directly paired with HMAX. Except for enabling the validated
+# battery architecture, the renewable resource envelope, hydrogen formulation,
+# technology assumptions, weather year and economic assumptions are unchanged.
 #
 # Important interpretation:
 #   The renewable limits are project-specific development bounds adopted
@@ -21,7 +26,7 @@
 #   technical renewable potential of the wider Mangystau region.
 # =============================================================================
 
-scenario_name: hmax_thesis_2045_offgrid_h2_kanagat
+scenario_name: hmax_b_thesis_2045_offgrid_h2_battery_kanagat
 
 
 # =============================================================================
@@ -157,20 +162,30 @@ hydrogen_storage:
 # 7. Battery storage
 # =============================================================================
 #
-# Disabled in S0.
-# S1 and S3 will enable battery storage.
+# Enabled in HMAX-B to test whether electrical storage changes either the
+# maximum H2-production envelope or the least-cost design that retains it.
 #
-# Both battery power [MW] and battery energy [MWh] should ultimately be
-# optimized rather than imposing a fixed storage duration.
+# Battery power and energy capacities are optimized independently using the
+# same validated 2045 battery representation as scenario S1.
 # =============================================================================
 
 battery:
-  enabled: false
+  enabled: true
 
+  # Battery power and energy capacity are optimized independently.
   p_nom_extendable: true
   e_nom_extendable: true
 
+  # End-of-year state of charge equals initial state of charge.
   cyclic_state_of_charge: true
+
+  # 2045 technology parameters are taken from the active
+  # PyPSA technology-data costs_2045 dataset.
+  inverter_technology: "battery inverter"
+  storage_technology: "battery storage"
+
+  # No standing self-discharge is assumed in the base model.
+  standing_loss: 0.0
 
 
 # =============================================================================
