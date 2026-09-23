@@ -159,9 +159,12 @@ hydrogen_enabled = bool(
     )
 )
 
-hydrogen_mode = hydrogen_cfg.get(
-    "mode"
-)
+hydrogen_mode = str(
+    hydrogen_cfg.get(
+        "mode",
+        "production_target",
+    )
+).strip().lower()
 
 battery_enabled = bool(
     battery_cfg.get(
@@ -199,10 +202,16 @@ if not hydrogen_enabled:
         "The off-grid S0 analysis requires hydrogen.enabled=true."
     )
 
-if hydrogen_mode != "production_target":
+supported_hydrogen_modes = {
+    "production_target",
+    "maximize_production",
+}
+
+if hydrogen_mode not in supported_hydrogen_modes:
     raise ValueError(
-        "The current off-grid analysis requires "
-        "hydrogen.mode='production_target'."
+        "Unsupported hydrogen.mode in analysis. Expected one of "
+        f"{sorted(supported_hydrogen_modes)}, "
+        f"got {hydrogen_mode!r}."
     )
 
 # S0 only for this validation stage.
@@ -1179,21 +1188,8 @@ if battery_enabled:
         battery_soc_mwh.max()
     )
 # =============================================================================
-# 13. Hydrogen target and mass conversion
+# 13. Hydrogen accounting and mass conversion
 # =============================================================================
-target_annual_kt_h2 = hydrogen_cfg.get(
-    "target_annual_kt_h2"
-)
-
-if target_annual_kt_h2 is None:
-    raise ValueError(
-        "hydrogen.target_annual_kt_h2 is not defined."
-    )
-
-target_annual_kt_h2 = float(
-    target_annual_kt_h2
-)
-
 hydrogen_lhv_kwh_per_kg = float(
     hydrogen_cfg.get(
         "hydrogen_lhv_kwh_per_kg",
@@ -1207,16 +1203,132 @@ if hydrogen_lhv_kwh_per_kg <= 0.0:
     )
 
 
-target_annual_kg_h2 = (
-    target_annual_kt_h2
-    * 1_000_000.0
-)
+# Defaults used when a quantity is not applicable to the active mode.
+target_annual_kt_h2 = np.nan
+target_annual_kg_h2 = np.nan
+target_annual_mwh_h2 = np.nan
+hydrogen_target_achievement = np.nan
 
-target_annual_mwh_h2 = (
-    target_annual_kg_h2
-    * hydrogen_lhv_kwh_per_kg
-    / 1000.0
-)
+hmax_stage1_hydrogen_mwh = np.nan
+hmax_stage1_hydrogen_kg = np.nan
+hmax_stage1_hydrogen_kt = np.nan
+hmax_tolerance_mwh = np.nan
+hmax_stage2_minimum_hydrogen_mwh = np.nan
+hmax_gap_to_stage1_mwh = np.nan
+hmax_stage2_retained_fraction = np.nan
+
+
+if hydrogen_mode == "production_target":
+    configured_target_kt_h2 = hydrogen_cfg.get(
+        "target_annual_kt_h2"
+    )
+
+    if configured_target_kt_h2 is None:
+        raise ValueError(
+            "hydrogen.target_annual_kt_h2 must be defined "
+            "for production_target mode."
+        )
+
+    target_annual_kt_h2 = float(
+        configured_target_kt_h2
+    )
+
+    if target_annual_kt_h2 <= 0.0:
+        raise ValueError(
+            "hydrogen.target_annual_kt_h2 must be positive."
+        )
+
+    target_annual_kg_h2 = (
+        target_annual_kt_h2
+        * 1_000_000.0
+    )
+
+    target_annual_mwh_h2 = (
+        target_annual_kg_h2
+        * hydrogen_lhv_kwh_per_kg
+        / 1000.0
+    )
+
+elif hydrogen_mode == "maximize_production":
+    network_meta = dict(
+        getattr(
+            n,
+            "meta",
+            {},
+        )
+        or {}
+    )
+
+    required_hmax_metadata = [
+        "hmax_stage1_hydrogen_mwh",
+        "hmax_tolerance_mwh",
+        "hmax_stage2_minimum_hydrogen_mwh",
+    ]
+
+    missing_hmax_metadata = [
+        key
+        for key in required_hmax_metadata
+        if key not in network_meta
+    ]
+
+    if missing_hmax_metadata:
+        raise RuntimeError(
+            "HMAX analysis metadata are missing from the "
+            f"solved network: {missing_hmax_metadata}"
+        )
+
+    hmax_stage1_hydrogen_mwh = float(
+        network_meta[
+            "hmax_stage1_hydrogen_mwh"
+        ]
+    )
+
+    hmax_tolerance_mwh = float(
+        network_meta[
+            "hmax_tolerance_mwh"
+        ]
+    )
+
+    hmax_stage2_minimum_hydrogen_mwh = float(
+        network_meta[
+            "hmax_stage2_minimum_hydrogen_mwh"
+        ]
+    )
+
+    hmax_metadata_values = [
+        hmax_stage1_hydrogen_mwh,
+        hmax_tolerance_mwh,
+        hmax_stage2_minimum_hydrogen_mwh,
+    ]
+
+    if not all(
+        np.isfinite(value)
+        for value in hmax_metadata_values
+    ):
+        raise RuntimeError(
+            "HMAX analysis metadata contain non-finite values."
+        )
+
+    if hmax_stage1_hydrogen_mwh <= 0.0:
+        raise RuntimeError(
+            "HMAX Stage-1 hydrogen production must be positive."
+        )
+
+    if hmax_tolerance_mwh <= 0.0:
+        raise RuntimeError(
+            "HMAX numerical tolerance must be positive."
+        )
+
+    hmax_stage1_hydrogen_kg = (
+        hmax_stage1_hydrogen_mwh
+        * 1000.0
+        / hydrogen_lhv_kwh_per_kg
+    )
+
+    hmax_stage1_hydrogen_kt = (
+        hmax_stage1_hydrogen_kg
+        / 1_000_000.0
+    )
 
 
 hydrogen_delivered_kg = (
@@ -1231,12 +1343,105 @@ hydrogen_delivered_kt = (
 )
 
 
-hydrogen_target_achievement = (
-    hydrogen_delivered_mwh
-    / target_annual_mwh_h2
-    if target_annual_mwh_h2 > 0
-    else np.nan
+if hydrogen_mode == "production_target":
+    hydrogen_target_achievement = (
+        hydrogen_delivered_mwh
+        / target_annual_mwh_h2
+        if target_annual_mwh_h2 > 0.0
+        else np.nan
+    )
+
+elif hydrogen_mode == "maximize_production":
+    hmax_gap_to_stage1_mwh = (
+        hmax_stage1_hydrogen_mwh
+        - hydrogen_delivered_mwh
+    )
+
+    hmax_stage2_retained_fraction = (
+        hydrogen_delivered_mwh
+        / hmax_stage1_hydrogen_mwh
+        if hmax_stage1_hydrogen_mwh > 0.0
+        else np.nan
+    )
+
+
+# Renewable resource-envelope information.
+renewable_cfg_analysis = cfg.get(
+    "renewables",
+    {},
 )
+
+solar_resource_cap_mw = (
+    renewable_cfg_analysis
+    .get(
+        "solar",
+        {},
+    )
+    .get(
+        "max_capacity_mw"
+    )
+)
+
+wind_resource_cap_mw = (
+    renewable_cfg_analysis
+    .get(
+        "wind",
+        {},
+    )
+    .get(
+        "max_capacity_mw"
+    )
+)
+
+solar_resource_cap_binding = np.nan
+wind_resource_cap_binding = np.nan
+
+if solar_resource_cap_mw is not None:
+    solar_resource_cap_mw = float(
+        solar_resource_cap_mw
+    )
+
+    solar_cap_tolerance_mw = max(
+        1e-6,
+        solar_resource_cap_mw
+        * 1e-8,
+    )
+
+    solar_resource_cap_binding = bool(
+        np.isclose(
+            solar_capacity_mw,
+            solar_resource_cap_mw,
+            rtol=0.0,
+            atol=solar_cap_tolerance_mw,
+        )
+    )
+
+else:
+    solar_resource_cap_mw = np.nan
+
+
+if wind_resource_cap_mw is not None:
+    wind_resource_cap_mw = float(
+        wind_resource_cap_mw
+    )
+
+    wind_cap_tolerance_mw = max(
+        1e-6,
+        wind_resource_cap_mw
+        * 1e-8,
+    )
+
+    wind_resource_cap_binding = bool(
+        np.isclose(
+            wind_capacity_mw,
+            wind_resource_cap_mw,
+            rtol=0.0,
+            atol=wind_cap_tolerance_mw,
+        )
+    )
+
+else:
+    wind_resource_cap_mw = np.nan
 
 
 specific_electricity_kwh_per_kg_h2 = (
@@ -1753,23 +1958,82 @@ battery_total_fixed_cost_eur = (
 # =============================================================================
 # 19. Numerical consistency checks
 # =============================================================================
-target_tolerance_mwh = max(
-    1e-3,
-    target_annual_mwh_h2
-    * 1e-8,
-)
-
-if not np.isclose(
-    hydrogen_delivered_mwh,
-    target_annual_mwh_h2,
-    rtol=0.0,
-    atol=target_tolerance_mwh,
-):
-    raise RuntimeError(
-        "Hydrogen target validation failed: "
-        f"target={target_annual_mwh_h2:.6f} MWh_H2, "
-        f"actual={hydrogen_delivered_mwh:.6f} MWh_H2."
+if hydrogen_mode == "production_target":
+    target_tolerance_mwh = max(
+        1e-3,
+        target_annual_mwh_h2
+        * 1e-8,
     )
+
+    if not np.isclose(
+        hydrogen_delivered_mwh,
+        target_annual_mwh_h2,
+        rtol=0.0,
+        atol=target_tolerance_mwh,
+    ):
+        raise RuntimeError(
+            "Hydrogen target validation failed: "
+            f"target={target_annual_mwh_h2:.6f} MWh_H2, "
+            f"actual={hydrogen_delivered_mwh:.6f} MWh_H2."
+        )
+
+elif hydrogen_mode == "maximize_production":
+    expected_stage2_minimum_mwh = (
+        hmax_stage1_hydrogen_mwh
+        - hmax_tolerance_mwh
+    )
+
+    metadata_tolerance_mwh = max(
+        1e-6,
+        hmax_stage1_hydrogen_mwh
+        * 1e-10,
+    )
+
+    if not np.isclose(
+        hmax_stage2_minimum_hydrogen_mwh,
+        expected_stage2_minimum_mwh,
+        rtol=0.0,
+        atol=metadata_tolerance_mwh,
+    ):
+        raise RuntimeError(
+            "HMAX metadata consistency check failed: "
+            f"stage1={hmax_stage1_hydrogen_mwh:.6f} MWh_H2, "
+            f"tolerance={hmax_tolerance_mwh:.6f} MWh_H2, "
+            f"stage2_floor="
+            f"{hmax_stage2_minimum_hydrogen_mwh:.6f} MWh_H2."
+        )
+
+    hmax_validation_tolerance_mwh = max(
+        1e-3,
+        hmax_stage1_hydrogen_mwh
+        * 1e-8,
+    )
+
+    if (
+        hydrogen_delivered_mwh
+        + hmax_validation_tolerance_mwh
+        < hmax_stage2_minimum_hydrogen_mwh
+    ):
+        raise RuntimeError(
+            "HMAX Stage-2 hydrogen production fell below "
+            "the required production floor: "
+            f"floor="
+            f"{hmax_stage2_minimum_hydrogen_mwh:.6f} MWh_H2, "
+            f"actual={hydrogen_delivered_mwh:.6f} MWh_H2."
+        )
+
+    if (
+        hydrogen_delivered_mwh
+        - hmax_validation_tolerance_mwh
+        > hmax_stage1_hydrogen_mwh
+    ):
+        raise RuntimeError(
+            "HMAX Stage-2 hydrogen production materially "
+            "exceeded the Stage-1 physical maximum: "
+            f"stage1="
+            f"{hmax_stage1_hydrogen_mwh:.6f} MWh_H2, "
+            f"stage2={hydrogen_delivered_mwh:.6f} MWh_H2."
+        )
 
 
 balance_tolerance_mw = 1e-4
@@ -2068,6 +2332,36 @@ summary = pd.DataFrame(
         ],
         "h2_lhv_kwh_per_kg": [
             hydrogen_lhv_kwh_per_kg
+        ],
+        "hmax_stage1_hydrogen_mwh": [
+            hmax_stage1_hydrogen_mwh
+        ],
+        "hmax_stage1_hydrogen_kt": [
+            hmax_stage1_hydrogen_kt
+        ],
+        "hmax_tolerance_mwh": [
+            hmax_tolerance_mwh
+        ],
+        "hmax_stage2_minimum_hydrogen_mwh": [
+            hmax_stage2_minimum_hydrogen_mwh
+        ],
+        "hmax_gap_to_stage1_mwh": [
+            hmax_gap_to_stage1_mwh
+        ],
+        "hmax_stage2_retained_fraction": [
+            hmax_stage2_retained_fraction
+        ],
+        "solar_resource_cap_mw": [
+            solar_resource_cap_mw
+        ],
+        "solar_resource_cap_binding": [
+            solar_resource_cap_binding
+        ],
+        "wind_resource_cap_mw": [
+            wind_resource_cap_mw
+        ],
+        "wind_resource_cap_binding": [
+            wind_resource_cap_binding
         ],
 
         # Optimal capacities
@@ -3427,18 +3721,37 @@ dashboard.add_trace(
 )
 
 
+if hydrogen_mode == "production_target":
+    hydrogen_dashboard_labels = [
+        "Target",
+        "Delivered",
+    ]
+
+    hydrogen_dashboard_values_gwh = [
+        target_annual_mwh_h2
+        / 1000.0,
+        hydrogen_delivered_mwh
+        / 1000.0,
+    ]
+
+elif hydrogen_mode == "maximize_production":
+    hydrogen_dashboard_labels = [
+        "Stage-1 maximum",
+        "Stage-2 delivered",
+    ]
+
+    hydrogen_dashboard_values_gwh = [
+        hmax_stage1_hydrogen_mwh
+        / 1000.0,
+        hydrogen_delivered_mwh
+        / 1000.0,
+    ]
+
+
 dashboard.add_trace(
     go.Bar(
-        x=[
-            "Target",
-            "Delivered",
-        ],
-        y=[
-            target_annual_mwh_h2
-            / 1000.0,
-            hydrogen_delivered_mwh
-            / 1000.0,
-        ],
+        x=hydrogen_dashboard_labels,
+        y=hydrogen_dashboard_values_gwh,
         name="Hydrogen",
     ),
     row=3,
@@ -3671,18 +3984,49 @@ print(
 )
 
 print("\nHydrogen:")
-print(
-    f"  Target:            "
-    f"{target_annual_kt_h2:.6f} kt/a"
-)
-print(
-    f"  Delivered:         "
-    f"{hydrogen_delivered_kt:.6f} kt/a"
-)
-print(
-    f"  Target achievement:"
-    f" {hydrogen_target_achievement * 100:.6f}%"
-)
+
+if hydrogen_mode == "production_target":
+    print(
+        f"  Target:            "
+        f"{target_annual_kt_h2:.6f} kt/a"
+    )
+    print(
+        f"  Delivered:         "
+        f"{hydrogen_delivered_kt:.6f} kt/a"
+    )
+    print(
+        f"  Target achievement:"
+        f" {hydrogen_target_achievement * 100:.6f}%"
+    )
+
+elif hydrogen_mode == "maximize_production":
+    print(
+        f"  Stage-1 maximum:   "
+        f"{hmax_stage1_hydrogen_kt:.6f} kt/a"
+    )
+    print(
+        f"  Stage-2 delivered: "
+        f"{hydrogen_delivered_kt:.6f} kt/a"
+    )
+    print(
+        f"  Gap to maximum:    "
+        f"{hmax_gap_to_stage1_mwh:.6f} MWh_H2/a"
+    )
+    print(
+        f"  Maximum retained:  "
+        f"{hmax_stage2_retained_fraction * 100:.9f}%"
+    )
+    print(
+        f"  Solar resource cap:"
+        f" {solar_resource_cap_mw:,.3f} MW "
+        f"(binding={solar_resource_cap_binding})"
+    )
+    print(
+        f"  Wind resource cap: "
+        f"{wind_resource_cap_mw:,.3f} MW "
+        f"(binding={wind_resource_cap_binding})"
+    )
+
 print(
     f"  Specific power:    "
     f"{specific_electricity_kwh_per_kg_h2:.3f} "
@@ -3924,7 +4268,15 @@ if battery_enabled:
     )
 
 print("\nChecks:")
-print("  H2 target:          PASS")
+
+if hydrogen_mode == "production_target":
+    print(
+        "  H2 target:          PASS"
+    )
+elif hydrogen_mode == "maximize_production":
+    print(
+        "  HMAX production:    PASS"
+    )
 print("  Electrolyzer eta:   PASS")
 print("  Electricity balance:PASS")
 print("  Hydrogen balance:   PASS")
