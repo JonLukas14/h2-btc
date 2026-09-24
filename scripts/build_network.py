@@ -98,6 +98,7 @@ def build_test_network(cfg, data_dir):
     supported_hydrogen_modes = {
         "production_target",
         "maximize_production",
+        "economic_dispatch",
     }
 
     if hydrogen_mode not in supported_hydrogen_modes:
@@ -498,11 +499,15 @@ def build_test_network(cfg, data_dir):
         {},
     )
 
-    # A hydrogen-production maximization without finite renewable capacity
-    # limits would be unbounded because solar, wind and PEM capacities are
-    # extendable. Therefore every enabled and extendable renewable technology
-    # must have a finite positive capacity limit in maximize_production mode.
-    if hydrogen_mode == "maximize_production":
+    # Endogenous hydrogen production without finite renewable capacity
+    # limits can become unbounded when renewable generation, PEM capacity,
+    # and product output are all extendable. Therefore every enabled and
+    # extendable renewable technology must have a positive capacity limit
+    # in both physical-maximum and merchant-production modes.
+    if hydrogen_mode in {
+        "maximize_production",
+        "economic_dispatch",
+    }:
         for renewable_name, asset_cfg in (
             ("solar", solar_cfg),
             ("wind", wind_cfg),
@@ -533,18 +538,21 @@ def build_test_network(cfg, data_dir):
                     raise ValueError(
                         f"renewables.{renewable_name}.max_capacity_mw "
                         "must be defined for "
-                        "hydrogen.mode='maximize_production'."
+                        f"hydrogen.mode={hydrogen_mode!r}."
                     )
 
                 max_capacity_mw = float(
                     max_capacity_mw
                 )
 
-                if max_capacity_mw <= 0.0:
+                if (
+                    not math.isfinite(max_capacity_mw)
+                    or max_capacity_mw <= 0.0
+                ):
                     raise ValueError(
                         f"renewables.{renewable_name}.max_capacity_mw "
-                        "must be greater than zero for "
-                        "hydrogen.mode='maximize_production'."
+                        "must be finite and greater than zero for "
+                        f"hydrogen.mode={hydrogen_mode!r}."
                     )
 
     if bool(solar_cfg.get("enabled", True)):
@@ -1135,6 +1143,55 @@ def build_test_network(cfg, data_dir):
             "must be greater than zero."
         )
 
+    # Merchant hydrogen value is defined at the plant boundary in EUR/kg_H2
+    # and is used only in economic_dispatch mode.
+    #
+    # Conversion:
+    #
+    #   EUR/kg_H2 * 1000 kWh/MWh
+    #   -------------------------------- = EUR/MWh_H2
+    #          kWh_H2/kg_H2
+    #
+    # Zero is deliberately allowed so that a no-revenue merchant case can
+    # be used as a regression test.
+    hydrogen_sale_value_eur_per_kg_h2 = 0.0
+    hydrogen_sale_value_eur_per_mwh_h2 = 0.0
+
+    if hydrogen_mode == "economic_dispatch":
+        configured_hydrogen_sale_value = (
+            hydrogen_cfg.get(
+                "sale_value_eur_per_kg_h2"
+            )
+        )
+
+        if configured_hydrogen_sale_value is None:
+            raise ValueError(
+                "hydrogen.sale_value_eur_per_kg_h2 "
+                "must be defined for "
+                "hydrogen.mode='economic_dispatch'."
+            )
+
+        hydrogen_sale_value_eur_per_kg_h2 = float(
+            configured_hydrogen_sale_value
+        )
+
+        if (
+            not math.isfinite(
+                hydrogen_sale_value_eur_per_kg_h2
+            )
+            or hydrogen_sale_value_eur_per_kg_h2 < 0.0
+        ):
+            raise ValueError(
+                "hydrogen.sale_value_eur_per_kg_h2 "
+                "must be finite and non-negative."
+            )
+
+        hydrogen_sale_value_eur_per_mwh_h2 = (
+            hydrogen_sale_value_eur_per_kg_h2
+            * 1000.0
+            / hydrogen_lhv_kwh_per_kg
+        )
+
     target_annual_kt_h2 = None
     target_annual_h2_mwh = None
 
@@ -1199,6 +1256,19 @@ def build_test_network(cfg, data_dir):
             "capital_cost": 0.0,
         }
 
+    elif hydrogen_mode == "economic_dispatch":
+        # Merchant hydrogen production has no prescribed annual quantity.
+        #
+        # The delivery component represents only the plant-boundary product
+        # sink. It therefore has no independent investment cost; physical
+        # hydrogen-production capacity remains represented by the PEM link.
+        hydrogen_delivery_kwargs = {
+            "p_nom": 0.0,
+            "p_nom_extendable": True,
+            "p_nom_min": 0.0,
+            "capital_cost": 0.0,
+        }
+
     else:
         raise RuntimeError(
             f"Unexpected hydrogen mode {hydrogen_mode!r}."
@@ -1212,7 +1282,11 @@ def build_test_network(cfg, data_dir):
         sign=-1.0,
         p_min_pu=0.0,
         p_max_pu=1.0,
-        marginal_cost=0.0,
+        marginal_cost=(
+            -hydrogen_sale_value_eur_per_mwh_h2
+            if hydrogen_mode == "economic_dispatch"
+            else 0.0
+        ),
         **hydrogen_delivery_kwargs,
     )
 
@@ -1274,6 +1348,26 @@ def build_test_network(cfg, data_dir):
         print(
             "  Annual target constraint: "
             "not used"
+        )
+
+    elif hydrogen_mode == "economic_dispatch":
+        print(
+            "  Annual target [kt]:     "
+            "none (merchant production)"
+        )
+        print(
+            "  Annual target constraint: "
+            "not used"
+        )
+        print(
+            f"  H2 sale value:          "
+            f"{hydrogen_sale_value_eur_per_kg_h2:.6f} "
+            "EUR/kg_H2"
+        )
+        print(
+            f"  H2 sale value:          "
+            f"{hydrogen_sale_value_eur_per_mwh_h2:.6f} "
+            "EUR/MWh_H2"
         )
 
     if battery_enabled:

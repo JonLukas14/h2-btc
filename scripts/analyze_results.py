@@ -205,6 +205,7 @@ if not hydrogen_enabled:
 supported_hydrogen_modes = {
     "production_target",
     "maximize_production",
+    "economic_dispatch",
 }
 
 if hydrogen_mode not in supported_hydrogen_modes:
@@ -399,6 +400,57 @@ def weighted_average(series):
         ).sum()
         / modeled_hours
     )
+
+
+# =============================================================================
+# 9b. Normalize missing all-zero optimized result series
+# =============================================================================
+#
+# PyPSA may omit an optimized time-series column when the complete series is
+# zero. This occurs legitimately in merchant scenarios where the economic
+# optimum is zero investment / zero dispatch.
+#
+# For analysis, an omitted optimized result series is therefore represented
+# explicitly as a zero-valued series over all snapshots. Existing non-zero
+# result columns are left unchanged.
+# =============================================================================
+def ensure_result_columns(
+    table,
+    assets,
+):
+    for asset in assets:
+        if asset not in table.columns:
+            table[asset] = pd.Series(
+                0.0,
+                index=n.snapshots,
+                dtype=float,
+            )
+
+
+ensure_result_columns(
+    n.generators_t.p,
+    n.generators.index,
+)
+
+ensure_result_columns(
+    n.links_t.p0,
+    n.links.index,
+)
+
+ensure_result_columns(
+    n.links_t.p1,
+    n.links.index,
+)
+
+ensure_result_columns(
+    n.stores_t.p,
+    n.stores.index,
+)
+
+ensure_result_columns(
+    n.stores_t.e,
+    n.stores.index,
+)
 
 
 # =============================================================================
@@ -1239,6 +1291,41 @@ target_annual_kg_h2 = np.nan
 target_annual_mwh_h2 = np.nan
 hydrogen_target_achievement = np.nan
 
+hydrogen_sale_value_eur_per_kg_h2 = np.nan
+hydrogen_sale_value_eur_per_mwh_h2 = np.nan
+
+if hydrogen_mode == "economic_dispatch":
+    configured_hydrogen_sale_value = hydrogen_cfg.get(
+        "sale_value_eur_per_kg_h2"
+    )
+
+    if configured_hydrogen_sale_value is None:
+        raise ValueError(
+            "hydrogen.sale_value_eur_per_kg_h2 must be defined "
+            "for hydrogen.mode='economic_dispatch'."
+        )
+
+    hydrogen_sale_value_eur_per_kg_h2 = float(
+        configured_hydrogen_sale_value
+    )
+
+    if (
+        not np.isfinite(
+            hydrogen_sale_value_eur_per_kg_h2
+        )
+        or hydrogen_sale_value_eur_per_kg_h2 < 0.0
+    ):
+        raise ValueError(
+            "hydrogen.sale_value_eur_per_kg_h2 "
+            "must be finite and non-negative."
+        )
+
+    hydrogen_sale_value_eur_per_mwh_h2 = (
+        hydrogen_sale_value_eur_per_kg_h2
+        * 1000.0
+        / hydrogen_lhv_kwh_per_kg
+    )
+
 hmax_stage1_hydrogen_mwh = np.nan
 hmax_stage1_hydrogen_kg = np.nan
 hmax_stage1_hydrogen_kt = np.nan
@@ -1403,6 +1490,15 @@ hydrogen_delivered_kt = (
     hydrogen_delivered_kg
     / 1_000_000.0
 )
+
+
+hydrogen_gross_revenue_eur = 0.0
+
+if hydrogen_mode == "economic_dispatch":
+    hydrogen_gross_revenue_eur = (
+        hydrogen_delivered_kg
+        * hydrogen_sale_value_eur_per_kg_h2
+    )
 
 
 water_requirement_m3_per_year = np.nan
@@ -1794,23 +1890,32 @@ annualized_fixed_cost_eur = float(
     n.statistics.capex().sum()
 )
 
-# PyPSA's OPEX statistic contains the Bitcoin sink's negative
-# marginal-cost contribution when Bitcoin is enabled.
+# PyPSA's OPEX statistic contains revenue-bearing sinks as negative
+# marginal-cost contributions:
 #
-# Therefore this is the NET variable contribution to the objective.
+#   Bitcoin:
+#       bitcoin variable OPEX - Bitcoin gross revenue
+#
+#   Merchant hydrogen:
+#       - hydrogen gross revenue
+#
+# Therefore this value is the NET variable contribution to the PyPSA
+# objective, not gross physical operating expenditure.
 variable_operating_cost_eur = float(
     n.statistics.opex().sum()
 )
 
-# Add the Bitcoin net operating value back to recover variable
-# operating costs of all non-Bitcoin assets.
+# Add both revenue-bearing contributions back to recover variable operating
+# costs of the physical non-Bitcoin system. For all non-merchant scenarios,
+# hydrogen_gross_revenue_eur is exactly zero, preserving previous results.
 non_bitcoin_variable_operating_cost_eur = (
     variable_operating_cost_eur
     + bitcoin_net_operating_value_eur
+    + hydrogen_gross_revenue_eur
 )
 
-# Gross expenditure includes physical system expenditure and explicit
-# non-electric Bitcoin variable OPEX, but excludes mining revenue.
+# Gross variable expenditure contains physical system variable costs plus
+# explicit non-electric Bitcoin operating expenditure, but no product revenue.
 gross_variable_operating_cost_eur = (
     non_bitcoin_variable_operating_cost_eur
     + bitcoin_variable_opex_eur
@@ -1821,18 +1926,18 @@ gross_system_expenditure_eur = (
     + gross_variable_operating_cost_eur
 )
 
+# Net system cost is the actual merchant objective boundary:
+#
+#   annualized system expenditure
+#   - Bitcoin gross revenue
+#   - hydrogen gross revenue
 net_system_cost_eur = (
     gross_system_expenditure_eur
     - bitcoin_gross_revenue_eur
+    - hydrogen_gross_revenue_eur
 )
 
-# Backward-compatible name used by S0/S1 and existing output code.
-#
-# With Bitcoin disabled:
-#     system_cost_eur == gross_system_expenditure_eur
-#
-# With Bitcoin enabled:
-#     system_cost_eur == net_system_cost_eur
+# Backward-compatible name used by existing output code.
 system_cost_eur = (
     net_system_cost_eur
 )
@@ -1861,18 +1966,14 @@ gross_system_expenditure_eur_per_kg_h2 = (
     else np.nan
 )
 
-# Conventional LCOH is retained only for scenarios without Bitcoin revenue.
-#
-# Once Bitcoin is enabled, the integrated-system economics have a different
-# allocation boundary. In those scenarios, use:
-#
-#   gross_system_expenditure_eur_per_kg_h2
-#   net_system_cost_eur_per_kg_h2
-#
-# rather than interpreting net cost after BTC revenue as LCOH.
+# Conventional LCOH is meaningful only when neither Bitcoin nor merchant-H2
+# revenue is part of the optimization boundary.
 lcoh_eur_per_kg_h2 = (
     net_system_cost_eur_per_kg_h2
-    if not bitcoin_enabled
+    if (
+        not bitcoin_enabled
+        and hydrogen_mode != "economic_dispatch"
+    )
     else np.nan
 )
 
@@ -1935,6 +2036,14 @@ variable_cost_by_name = (
 )
 
 
+hydrogen_delivery_objective_contribution_eur = float(
+    variable_cost_by_name.get(
+        "hydrogen_delivery",
+        0.0,
+    )
+)
+
+
 cost_assets = [
     "solar",
     "wind",
@@ -1971,6 +2080,23 @@ if bitcoin_enabled:
     cost_labels[
         "bitcoin_mining_sink"
     ] = "Bitcoin mining (net value)"
+
+
+# In merchant-H2 mode, hydrogen_delivery carries the hydrogen sales value
+# as a negative marginal cost. Its variable contribution is therefore
+# revenue represented as a negative objective contribution, not a physical
+# hydrogen operating cost.
+if hydrogen_mode == "economic_dispatch":
+    cost_assets.append(
+        "hydrogen_delivery"
+    )
+
+    cost_labels[
+        "hydrogen_delivery"
+    ] = (
+        "Hydrogen sales revenue "
+        "(negative objective contribution)"
+    )
 
 
 cost_breakdown = pd.DataFrame(
@@ -2186,11 +2312,18 @@ if battery_enabled:
 
 efficiency_tolerance = 1e-8
 
-if not np.isclose(
-    realized_electrolyzer_efficiency,
-    electrolyzer_efficiency,
-    rtol=0.0,
-    atol=efficiency_tolerance,
+# Merchant optimization may legitimately select zero hydrogen production.
+# In that case no realized conversion efficiency exists and the metric is
+# intentionally reported as NaN. Validate PEM efficiency only when the
+# electrolyzer actually operates.
+if (
+    electrolyzer_input_mwh > 1e-6
+    and not np.isclose(
+        realized_electrolyzer_efficiency,
+        electrolyzer_efficiency,
+        rtol=0.0,
+        atol=efficiency_tolerance,
+    )
 ):
     raise RuntimeError(
         "Electrolyzer efficiency validation failed: "
@@ -2217,6 +2350,28 @@ if not np.isclose(
         f"objective={objective_eur:.6f} EUR, "
         f"calculated={system_cost_eur:.6f} EUR."
     )
+
+
+if hydrogen_mode == "economic_dispatch":
+    hydrogen_revenue_tolerance_eur = max(
+        1e-3,
+        abs(hydrogen_gross_revenue_eur)
+        * 1e-8,
+    )
+
+    if not np.isclose(
+        -hydrogen_delivery_objective_contribution_eur,
+        hydrogen_gross_revenue_eur,
+        rtol=0.0,
+        atol=hydrogen_revenue_tolerance_eur,
+    ):
+        raise RuntimeError(
+            "Hydrogen revenue/objective validation failed: "
+            f"reported revenue="
+            f"{hydrogen_gross_revenue_eur:.6f} EUR, "
+            f"PyPSA hydrogen-delivery contribution="
+            f"{hydrogen_delivery_objective_contribution_eur:.6f} EUR."
+        )
 
 
 if bitcoin_enabled:
@@ -2414,6 +2569,12 @@ summary = pd.DataFrame(
         ],
         "h2_lhv_kwh_per_kg": [
             hydrogen_lhv_kwh_per_kg
+        ],
+        "hydrogen_sale_value_eur_per_kg_h2": [
+            hydrogen_sale_value_eur_per_kg_h2
+        ],
+        "hydrogen_sale_value_eur_per_mwh_h2": [
+            hydrogen_sale_value_eur_per_mwh_h2
         ],
         "water_requirement_l_per_kg_h2": [
             water_requirement_l_per_kg_h2
@@ -2743,6 +2904,10 @@ summary = pd.DataFrame(
         ],
         "bitcoin_net_operating_value_eur_per_year": [
             bitcoin_net_operating_value_eur
+        ],
+
+        "hydrogen_gross_revenue_eur_per_year": [
+            hydrogen_gross_revenue_eur
         ],
 
         "battery_inverter_fixed_cost_eur_per_year": [
@@ -3851,6 +4016,17 @@ elif hydrogen_mode == "maximize_production":
     ]
 
 
+elif hydrogen_mode == "economic_dispatch":
+    hydrogen_dashboard_labels = [
+        "Delivered",
+    ]
+
+    hydrogen_dashboard_values_gwh = [
+        hydrogen_delivered_mwh
+        / 1000.0,
+    ]
+
+
 dashboard.add_trace(
     go.Bar(
         x=hydrogen_dashboard_labels,
@@ -4130,11 +4306,47 @@ elif hydrogen_mode == "maximize_production":
         f"(binding={wind_resource_cap_binding})"
     )
 
-print(
-    f"  Specific power:    "
-    f"{specific_electricity_kwh_per_kg_h2:.3f} "
-    f"kWh_el/kg_H2"
-)
+elif hydrogen_mode == "economic_dispatch":
+    print(
+        "  Target:            "
+        "none (endogenous merchant production)"
+    )
+    print(
+        f"  Delivered:         "
+        f"{hydrogen_delivered_kt:.6f} kt/a"
+    )
+    print(
+        f"  H2 sale value:     "
+        f"{hydrogen_sale_value_eur_per_kg_h2:.6f} EUR/kg_H2"
+    )
+    print(
+        f"  H2 gross revenue:  "
+        f"{hydrogen_gross_revenue_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Solar resource cap:"
+        f" {solar_resource_cap_mw:,.3f} MW "
+        f"(binding={solar_resource_cap_binding})"
+    )
+    print(
+        f"  Wind resource cap: "
+        f"{wind_resource_cap_mw:,.3f} MW "
+        f"(binding={wind_resource_cap_binding})"
+    )
+
+if np.isfinite(
+    specific_electricity_kwh_per_kg_h2
+):
+    print(
+        f"  Specific power:    "
+        f"{specific_electricity_kwh_per_kg_h2:.3f} "
+        f"kWh_el/kg_H2"
+    )
+else:
+    print(
+        "  Specific power:    "
+        "n/a (zero hydrogen production)"
+    )
 
 print("\nCapacity factors:")
 print(
@@ -4302,7 +4514,58 @@ print(
     f"{annualized_fixed_cost_eur:,.2f} EUR/a"
 )
 
-if bitcoin_enabled:
+if hydrogen_mode == "economic_dispatch":
+    print(
+        f"  Physical var. OPEX:"
+        f" {non_bitcoin_variable_operating_cost_eur:,.2f} EUR/a"
+    )
+
+    if bitcoin_enabled:
+        print(
+            f"  BTC variable OPEX: "
+            f"{bitcoin_variable_opex_eur:,.2f} EUR/a"
+        )
+
+    print(
+        f"  Gross expenditure: "
+        f"{gross_system_expenditure_eur:,.2f} EUR/a"
+    )
+
+    if bitcoin_enabled:
+        print(
+            f"  BTC gross revenue: "
+            f"{bitcoin_gross_revenue_eur:,.2f} EUR/a"
+        )
+
+    print(
+        f"  H2 gross revenue:  "
+        f"{hydrogen_gross_revenue_eur:,.2f} EUR/a"
+    )
+    print(
+        f"  Net system cost:   "
+        f"{net_system_cost_eur:,.2f} EUR/a"
+    )
+
+    if hydrogen_delivered_kg > 0.0:
+        print(
+            f"  Gross cost / kg H2:"
+            f" {gross_system_expenditure_eur_per_kg_h2:.4f} EUR/kg_H2"
+        )
+        print(
+            f"  Net cost / kg H2:  "
+            f"{net_system_cost_eur_per_kg_h2:.4f} EUR/kg_H2"
+        )
+    else:
+        print(
+            "  Gross cost / kg H2: n/a "
+            "(zero hydrogen production)"
+        )
+        print(
+            "  Net cost / kg H2:   n/a "
+            "(zero hydrogen production)"
+        )
+
+elif bitcoin_enabled:
     print(
         f"  Non-BTC var. OPEX: "
         f"{non_bitcoin_variable_operating_cost_eur:,.2f} EUR/a"
@@ -4380,7 +4643,19 @@ elif hydrogen_mode == "maximize_production":
     print(
         "  HMAX production:    PASS"
     )
-print("  Electrolyzer eta:   PASS")
+elif hydrogen_mode == "economic_dispatch":
+    print(
+        "  H2 target:          n/a (endogenous)"
+    )
+    print(
+        "  H2 revenue:         PASS"
+    )
+
+if electrolyzer_input_mwh > 1e-6:
+    print("  Electrolyzer eta:   PASS")
+else:
+    print("  Electrolyzer eta:   n/a (zero operation)")
+
 print("  Electricity balance:PASS")
 print("  Hydrogen balance:   PASS")
 print("  Cost accounting:    PASS")

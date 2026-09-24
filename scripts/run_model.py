@@ -416,7 +416,10 @@ def validate_solution(
             cfg
         )
 
-    elif hydrogen_mode == "maximize_production":
+    elif hydrogen_mode in {
+        "maximize_production",
+        "economic_dispatch",
+    }:
         target_mwh_h2 = None
 
     else:
@@ -1349,11 +1352,15 @@ def validate_solution(
         electrolyzer_input_mwh
         * 1000.0
         / hydrogen_delivered_kg
+        if hydrogen_delivered_kg > 0.0
+        else np.nan
     )
 
     realized_electrolyzer_efficiency = (
         electrolyzer_output_mwh
         / electrolyzer_input_mwh
+        if electrolyzer_input_mwh > 0.0
+        else np.nan
     )
 
     # -------------------------------------------------------------------------
@@ -1632,6 +1639,12 @@ def validate_solution(
             f"MWh_H2"
         )
 
+    elif hydrogen_mode == "economic_dispatch":
+        print(
+            "  H2 target:               "
+            "none (endogenous merchant production)"
+        )
+
     if battery_enabled:
         print("\nBattery operation:")
         print(
@@ -1674,15 +1687,33 @@ def validate_solution(
     )
 
     print("\nElectrolyzer:")
-    print(
-        f"  Realized efficiency:     "
-        f"{realized_electrolyzer_efficiency:.6f}"
-    )
-    print(
-        f"  Specific electricity:    "
-        f"{specific_electricity_kwh_per_kg_h2:.3f} "
-        f"kWh_el/kg_H2"
-    )
+
+    if np.isfinite(
+        realized_electrolyzer_efficiency
+    ):
+        print(
+            f"  Realized efficiency:     "
+            f"{realized_electrolyzer_efficiency:.6f}"
+        )
+    else:
+        print(
+            "  Realized efficiency:     "
+            "n/a (zero electrolyzer operation)"
+        )
+
+    if np.isfinite(
+        specific_electricity_kwh_per_kg_h2
+    ):
+        print(
+            f"  Specific electricity:    "
+            f"{specific_electricity_kwh_per_kg_h2:.3f} "
+            f"kWh_el/kg_H2"
+        )
+    else:
+        print(
+            "  Specific electricity:    "
+            "n/a (zero hydrogen production)"
+        )
 
     print("\nBalance validation:")
     print(
@@ -1714,6 +1745,11 @@ def validate_solution(
         print(
             "  HMAX production:         PASS"
         )
+    elif hydrogen_mode == "economic_dispatch":
+        print(
+            "  Annual H2 target:        n/a (endogenous)"
+        )
+
     print("  Electricity balance:     PASS")
     print("  Hydrogen balance:        PASS")
 
@@ -2063,6 +2099,36 @@ def main():
             "hmax_stage2_minimum_hydrogen_mwh"
         ] = float(
             stage2_minimum_hydrogen_mwh
+        )
+
+    # -------------------------------------------------------------------------
+    # Single-stage merchant hydrogen optimization
+    # -------------------------------------------------------------------------
+    elif hydrogen_mode == "economic_dispatch":
+
+        def extra_functionality(
+            network,
+            snapshots,
+        ):
+            # Merchant hydrogen has no exogenous annual production
+            # requirement. The optimization therefore retains PyPSA's
+            # normal economic objective:
+            #
+            #   annualized system costs
+            #   - hydrogen sales revenue
+            #   - Bitcoin operating revenue
+            #
+            # The only additional model constraint required here is the
+            # battery inverter power coupling when a battery is enabled.
+            add_battery_power_coupling_constraint(
+                network,
+                cfg,
+            )
+
+        status, condition = n.optimize(
+            solver_name="highs",
+            extra_functionality=extra_functionality,
+            include_objective_constant=False,
         )
 
     else:
