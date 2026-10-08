@@ -105,11 +105,45 @@ def summarize(n, cfg):
 
     objective = float(n.objective)
 
+    battery_power_mw = 0.0
+    battery_energy_mwh = 0.0
+    battery_duration_h = 0.0
+
+    if "battery_charger" in n.links.index:
+        battery_power_mw = float(
+            n.links.at[
+                "battery_charger",
+                "p_nom_opt",
+            ]
+        )
+
+        battery_energy_mwh = float(
+            n.stores.at[
+                "battery_store",
+                "e_nom_opt",
+            ]
+        )
+
+        if abs(battery_power_mw) < 1e-9:
+            battery_power_mw = 0.0
+
+        if abs(battery_energy_mwh) < 1e-9:
+            battery_energy_mwh = 0.0
+
+        if battery_power_mw > 1e-9:
+            battery_duration_h = (
+                battery_energy_mwh
+                / battery_power_mw
+            )
+
     return {
         "scenario_name": cfg["scenario_name"],
         "solar_capacity_mw": solar_capacity,
         "wind_capacity_mw": wind_capacity,
         "electrolyzer_capacity_mw": electrolyzer_capacity,
+        "battery_power_mw": battery_power_mw,
+        "battery_energy_mwh": battery_energy_mwh,
+        "battery_duration_h": battery_duration_h,
         "solar_generation_mwh": solar_generation,
         "wind_generation_mwh": wind_generation,
         "renewable_generation_mwh": total_generation,

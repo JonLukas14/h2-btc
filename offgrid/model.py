@@ -240,10 +240,10 @@ def build_network(cfg):
             "hydrogen.mode='production_target'."
         )
 
-    if cfg.get("battery", {}).get("enabled", False):
-        raise NotImplementedError(
-            "Battery is intentionally disabled until S0 regression passes."
-        )
+    battery_cfg = cfg.get("battery", {})
+    battery_enabled = bool(
+        battery_cfg.get("enabled", False)
+    )
 
     if cfg.get("bitcoin", {}).get("enabled", False):
         raise NotImplementedError(
@@ -300,16 +300,21 @@ def build_network(cfg):
     n = pypsa.Network()
     n.set_snapshots(snapshot_index)
 
+    carriers = [
+        "AC",
+        "H2",
+        "solar",
+        "wind",
+        "electrolyzer",
+        "hydrogen_delivery",
+    ]
+
+    if battery_enabled:
+        carriers.append("battery")
+
     n.add(
         "Carrier",
-        [
-            "AC",
-            "H2",
-            "solar",
-            "wind",
-            "electrolyzer",
-            "hydrogen_delivery",
-        ],
+        carriers,
     )
 
     n.add(
@@ -323,6 +328,13 @@ def build_network(cfg):
         "hydrogen_bus",
         carrier="H2",
     )
+
+    if battery_enabled:
+        n.add(
+            "Bus",
+            "battery_bus",
+            carrier="battery",
+        )
 
     solar_cfg = renewables["solar"]
     solar_kwargs = {}
@@ -385,6 +397,127 @@ def build_network(cfg):
         p_max_pu=wind_cf.to_numpy(),
         **wind_kwargs,
     )
+
+    if battery_enabled:
+        if not bool(
+            battery_cfg.get(
+                "p_nom_extendable",
+                True,
+            )
+        ):
+            raise ValueError(
+                "Clean S1 requires battery.p_nom_extendable=true."
+            )
+
+        if not bool(
+            battery_cfg.get(
+                "e_nom_extendable",
+                True,
+            )
+        ):
+            raise ValueError(
+                "Clean S1 requires battery.e_nom_extendable=true."
+            )
+
+        inverter_technology = str(
+            battery_cfg.get(
+                "inverter_technology",
+                "battery inverter",
+            )
+        )
+
+        storage_technology = str(
+            battery_cfg.get(
+                "storage_technology",
+                "battery storage",
+            )
+        )
+
+        inverter_efficiency = get_cost(
+            costs,
+            inverter_technology,
+            "efficiency",
+        )
+
+        if not 0.0 < inverter_efficiency <= 1.0:
+            raise ValueError(
+                "Battery inverter efficiency must lie in (0, 1]."
+            )
+
+        battery_charge_efficiency = math.sqrt(
+            inverter_efficiency
+        )
+
+        battery_discharge_efficiency = math.sqrt(
+            inverter_efficiency
+        )
+
+        standing_loss = float(
+            battery_cfg.get(
+                "standing_loss",
+                0.0,
+            )
+        )
+
+        if not 0.0 <= standing_loss < 1.0:
+            raise ValueError(
+                "battery.standing_loss must lie in [0, 1)."
+            )
+
+        inverter_annual_cost = annualized_capital_cost(
+            costs,
+            cfg,
+            inverter_technology,
+        )
+
+        storage_annual_cost = annualized_capital_cost(
+            costs,
+            cfg,
+            storage_technology,
+        )
+
+        n.add(
+            "Link",
+            "battery_charger",
+            bus0="electricity_bus",
+            bus1="battery_bus",
+            carrier="battery",
+            p_nom_extendable=True,
+            p_min_pu=0.0,
+            efficiency=battery_charge_efficiency,
+            capital_cost=inverter_annual_cost,
+            marginal_cost=0.0,
+        )
+
+        n.add(
+            "Store",
+            "battery_store",
+            bus="battery_bus",
+            carrier="battery",
+            e_nom_extendable=True,
+            e_cyclic=bool(
+                battery_cfg.get(
+                    "cyclic_state_of_charge",
+                    True,
+                )
+            ),
+            standing_loss=standing_loss,
+            capital_cost=storage_annual_cost,
+            marginal_cost=0.0,
+        )
+
+        n.add(
+            "Link",
+            "battery_discharger",
+            bus0="battery_bus",
+            bus1="electricity_bus",
+            carrier="battery",
+            p_nom_extendable=True,
+            p_min_pu=0.0,
+            efficiency=battery_discharge_efficiency,
+            capital_cost=0.0,
+            marginal_cost=0.0,
+        )
 
     electrolyzer_efficiency = float(
         hydrogen.get(
@@ -468,12 +601,49 @@ def add_hydrogen_target_constraint(n, cfg, snapshots):
     )
 
 
+def add_battery_power_coupling_constraint(n, cfg):
+    battery_cfg = cfg.get("battery", {})
+
+    if not bool(
+        battery_cfg.get("enabled", False)
+    ):
+        return
+
+    charger = (
+        n.model.variables["Link-p_nom"]
+        .loc["battery_charger"]
+    )
+
+    discharger = (
+        n.model.variables["Link-p_nom"]
+        .loc["battery_discharger"]
+    )
+
+    discharge_efficiency = float(
+        n.links.at[
+            "battery_discharger",
+            "efficiency",
+        ]
+    )
+
+    n.model.add_constraints(
+        charger
+        == discharge_efficiency * discharger,
+        name="GlobalConstraint-battery_power_coupling",
+    )
+
+
 def solve_network(n, cfg):
     def extra_functionality(network, snapshots):
         add_hydrogen_target_constraint(
             network,
             cfg,
             snapshots,
+        )
+
+        add_battery_power_coupling_constraint(
+            network,
+            cfg,
         )
 
     status, condition = n.optimize(

@@ -107,6 +107,16 @@ print(
 )
 
 print(
+    f"Battery power: "
+    f"{summary['battery_power_mw']:.6f} MW"
+)
+
+print(
+    f"Battery energy:"
+    f" {summary['battery_energy_mwh']:.6f} MWh"
+)
+
+print(
     f"System cost:  "
     f"{summary['objective_eur_per_year']:,.2f} EUR/a"
 )
