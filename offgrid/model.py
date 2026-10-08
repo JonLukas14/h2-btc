@@ -234,10 +234,21 @@ def build_network(cfg):
             "Clean model currently supports only model_type='off_grid'."
         )
 
-    if hydrogen.get("mode") != "production_target":
-        raise NotImplementedError(
-            "First clean implementation supports only "
-            "hydrogen.mode='production_target'."
+    hydrogen_mode = str(
+        hydrogen.get(
+            "mode",
+            "production_target",
+        )
+    ).strip().lower()
+
+    if hydrogen_mode not in {
+        "production_target",
+        "maximize_production",
+    }:
+        raise ValueError(
+            "Clean off-grid model currently supports "
+            "hydrogen.mode='production_target' or "
+            "'maximize_production'."
         )
 
     battery_cfg = cfg.get("battery", {})
@@ -740,7 +751,32 @@ def build_network(cfg):
         marginal_cost=electrolyzer_vom,
     )
 
-    target_mwh = hydrogen_target_mwh(cfg)
+    if hydrogen_mode == "production_target":
+        # Preserve the already validated S0-S3E formulation.
+        target_mwh = hydrogen_target_mwh(cfg)
+
+        hydrogen_delivery_kwargs = {
+            "p_nom": target_mwh,
+            "p_nom_extendable": False,
+        }
+
+    elif hydrogen_mode == "maximize_production":
+        # HMAX has no prescribed annual H2 quantity.
+        #
+        # Hydrogen delivery is therefore an extendable zero-cost
+        # product sink. The Stage-1 objective will maximize its
+        # annual dispatch subject to the physical system limits.
+        hydrogen_delivery_kwargs = {
+            "p_nom": 0.0,
+            "p_nom_extendable": True,
+            "p_nom_min": 0.0,
+            "capital_cost": 0.0,
+        }
+
+    else:
+        raise RuntimeError(
+            f"Unexpected hydrogen mode {hydrogen_mode!r}."
+        )
 
     n.add(
         "Generator",
@@ -748,11 +784,10 @@ def build_network(cfg):
         bus="hydrogen_bus",
         carrier="hydrogen_delivery",
         sign=-1.0,
-        p_nom=target_mwh,
-        p_nom_extendable=False,
         p_min_pu=0.0,
         p_max_pu=1.0,
         marginal_cost=0.0,
+        **hydrogen_delivery_kwargs,
     )
 
     return n
@@ -815,25 +850,295 @@ def add_battery_power_coupling_constraint(n, cfg):
         name="GlobalConstraint-battery_power_coupling",
     )
 
+def get_annual_hydrogen_delivery_expression(
+    n,
+    snapshots,
+):
+    delivery = (
+        n.model.variables["Generator-p"]
+        .sel(name="hydrogen_delivery")
+    )
+
+    weights = xr.DataArray(
+        n.snapshot_weightings.generators
+        .loc[snapshots]
+        .to_numpy(),
+        coords={"snapshot": snapshots},
+        dims=["snapshot"],
+    )
+
+    return (
+        delivery * weights
+    ).sum("snapshot")
+
+
+def add_hydrogen_minimum_constraint(
+    n,
+    snapshots,
+    minimum_hydrogen_mwh,
+):
+    annual_delivery = (
+        get_annual_hydrogen_delivery_expression(
+            n,
+            snapshots,
+        )
+    )
+
+    n.model.add_constraints(
+        annual_delivery >= minimum_hydrogen_mwh,
+        name="GlobalConstraint-hydrogen_delivery_minimum",
+    )
+
 
 def solve_network(n, cfg):
-    def extra_functionality(network, snapshots):
-        add_hydrogen_target_constraint(
+    hydrogen_mode = str(
+        cfg["hydrogen"].get(
+            "mode",
+            "production_target",
+        )
+    ).strip().lower()
+
+    # ========================================================
+    # Existing fixed-H2 pathway
+    # ========================================================
+
+    if hydrogen_mode == "production_target":
+
+        def extra_functionality(
             network,
-            cfg,
             snapshots,
+        ):
+            add_hydrogen_target_constraint(
+                network,
+                cfg,
+                snapshots,
+            )
+
+            add_battery_power_coupling_constraint(
+                network,
+                cfg,
+            )
+
+        status, condition = n.optimize(
+            solver_name="highs",
+            extra_functionality=extra_functionality,
+            include_objective_constant=True,
+        )
+
+    # ========================================================
+    # HMAX: lexicographic two-stage optimization
+    # ========================================================
+
+    elif hydrogen_mode == "maximize_production":
+
+        print()
+        print("=" * 60)
+        print("HMAX STAGE 1: MAXIMIZE ANNUAL HYDROGEN")
+        print("=" * 60)
+
+        # Build a separate Stage-1 network so that the normal
+        # economic objective of the final Stage-2 network is
+        # left untouched.
+        n_hmax = build_network(cfg)
+
+        n_hmax.optimize.create_model(
+            include_objective_constant=False,
         )
 
         add_battery_power_coupling_constraint(
-            network,
+            n_hmax,
             cfg,
         )
 
-    status, condition = n.optimize(
-        solver_name="highs",
-        extra_functionality=extra_functionality,
-        include_objective_constant=True,
-    )
+        annual_hydrogen_stage1 = (
+            get_annual_hydrogen_delivery_expression(
+                n_hmax,
+                n_hmax.snapshots,
+            )
+        )
+
+        # Pure physical/resource-potential optimization.
+        n_hmax.model.add_objective(
+            annual_hydrogen_stage1,
+            overwrite=True,
+            sense="max",
+        )
+
+        status_stage1, condition_stage1 = (
+            n_hmax.optimize.solve_model(
+                solver_name="highs",
+            )
+        )
+
+        if (
+            status_stage1 != "ok"
+            or condition_stage1 != "optimal"
+        ):
+            raise RuntimeError(
+                "HMAX Stage 1 failed: "
+                f"status={status_stage1}, "
+                f"condition={condition_stage1}"
+            )
+
+        stage1_weights = (
+            n_hmax.snapshot_weightings.generators
+            .reindex(n_hmax.snapshots)
+        )
+
+        stage1_hydrogen_mwh = float(
+            (
+                n_hmax.generators_t.p[
+                    "hydrogen_delivery"
+                ]
+                * stage1_weights
+            ).sum()
+        )
+
+        if (
+            not math.isfinite(stage1_hydrogen_mwh)
+            or stage1_hydrogen_mwh <= 0.0
+        ):
+            raise RuntimeError(
+                "HMAX Stage 1 returned invalid annual "
+                f"hydrogen production: {stage1_hydrogen_mwh!r}"
+            )
+
+        hmax_cfg = cfg["hydrogen"]
+
+        relative_tolerance = float(
+            hmax_cfg.get(
+                "hmax_relative_tolerance",
+                1e-8,
+            )
+        )
+
+        absolute_tolerance_mwh = float(
+            hmax_cfg.get(
+                "hmax_absolute_tolerance_mwh",
+                1e-3,
+            )
+        )
+
+        if (
+            not math.isfinite(relative_tolerance)
+            or relative_tolerance < 0.0
+        ):
+            raise ValueError(
+                "hydrogen.hmax_relative_tolerance must be "
+                "finite and non-negative."
+            )
+
+        if (
+            not math.isfinite(absolute_tolerance_mwh)
+            or absolute_tolerance_mwh < 0.0
+        ):
+            raise ValueError(
+                "hydrogen.hmax_absolute_tolerance_mwh must be "
+                "finite and non-negative."
+            )
+
+        hmax_tolerance_mwh = max(
+            absolute_tolerance_mwh,
+            stage1_hydrogen_mwh
+            * relative_tolerance,
+        )
+
+        stage2_minimum_hydrogen_mwh = (
+            stage1_hydrogen_mwh
+            - hmax_tolerance_mwh
+        )
+
+        print(
+            "Stage-1 maximum H2: "
+            f"{stage1_hydrogen_mwh:,.6f} MWh_H2/a"
+        )
+
+        print(
+            "Stage-2 tolerance:  "
+            f"{hmax_tolerance_mwh:,.6f} MWh_H2/a"
+        )
+
+        print(
+            "Stage-2 minimum H2: "
+            f"{stage2_minimum_hydrogen_mwh:,.6f} MWh_H2/a"
+        )
+
+        print()
+        print("=" * 60)
+        print("HMAX STAGE 2: MINIMIZE SYSTEM COST")
+        print("=" * 60)
+
+        def extra_functionality(
+            network,
+            snapshots,
+        ):
+            add_hydrogen_minimum_constraint(
+                network,
+                snapshots,
+                stage2_minimum_hydrogen_mwh,
+            )
+
+            add_battery_power_coupling_constraint(
+                network,
+                cfg,
+            )
+
+        status, condition = n.optimize(
+            solver_name="highs",
+            extra_functionality=extra_functionality,
+            include_objective_constant=False,
+        )
+
+        # Preserve the lexicographic information in the solved
+        # network so analysis remains reproducible.
+        n.meta = dict(
+            getattr(
+                n,
+                "meta",
+                {},
+            )
+            or {}
+        )
+
+        n.meta[
+            "hydrogen_mode"
+        ] = "maximize_production"
+
+        n.meta[
+            "hmax_stage1_hydrogen_mwh"
+        ] = float(
+            stage1_hydrogen_mwh
+        )
+
+        n.meta[
+            "hmax_relative_tolerance"
+        ] = float(
+            relative_tolerance
+        )
+
+        n.meta[
+            "hmax_absolute_tolerance_mwh"
+        ] = float(
+            absolute_tolerance_mwh
+        )
+
+        n.meta[
+            "hmax_tolerance_mwh"
+        ] = float(
+            hmax_tolerance_mwh
+        )
+
+        n.meta[
+            "hmax_stage2_minimum_hydrogen_mwh"
+        ] = float(
+            stage2_minimum_hydrogen_mwh
+        )
+
+    else:
+        raise ValueError(
+            "Unsupported hydrogen mode: "
+            f"{hydrogen_mode!r}"
+        )
 
     if status != "ok" or condition != "optimal":
         raise RuntimeError(

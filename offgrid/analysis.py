@@ -89,8 +89,21 @@ def summarize(n, cfg):
         + wind_available
     )
 
-    target_kt = float(
-        cfg["hydrogen"]["target_annual_kt_h2"]
+    hydrogen_mode = str(
+        cfg["hydrogen"].get(
+            "mode",
+            "production_target",
+        )
+    ).strip().lower()
+
+    target_value = cfg["hydrogen"].get(
+        "target_annual_kt_h2"
+    )
+
+    target_kt = (
+        float(target_value)
+        if target_value is not None
+        else None
     )
 
     delivered_kg = (
@@ -124,10 +137,14 @@ def summarize(n, cfg):
             ]
         )
 
-        if abs(battery_power_mw) < 1e-9:
+        # Reporting-only tolerance for solver-scale numerical
+        # residual capacities. This does not alter optimization.
+        battery_reporting_tolerance = 1e-5
+
+        if abs(battery_power_mw) < battery_reporting_tolerance:
             battery_power_mw = 0.0
 
-        if abs(battery_energy_mwh) < 1e-9:
+        if abs(battery_energy_mwh) < battery_reporting_tolerance:
             battery_energy_mwh = 0.0
 
         if battery_power_mw > 1e-9:
@@ -283,8 +300,86 @@ def summarize(n, cfg):
         + bitcoin_net_operating_value_eur_per_year
     )
 
+    # --------------------------------------------------------
+    # HMAX lexicographic metadata
+    # --------------------------------------------------------
+    hmax_stage1_hydrogen_mwh = float("nan")
+    hmax_stage1_hydrogen_kt = float("nan")
+    hmax_relative_tolerance = float("nan")
+    hmax_absolute_tolerance_mwh = float("nan")
+    hmax_tolerance_mwh = float("nan")
+    hmax_stage2_minimum_hydrogen_mwh = float("nan")
+    hmax_gap_to_stage1_mwh = float("nan")
+    hmax_stage2_retained_fraction = float("nan")
+
+    if hydrogen_mode == "maximize_production":
+        meta = dict(
+            getattr(n, "meta", {}) or {}
+        )
+
+        required = [
+            "hmax_stage1_hydrogen_mwh",
+            "hmax_relative_tolerance",
+            "hmax_absolute_tolerance_mwh",
+            "hmax_tolerance_mwh",
+            "hmax_stage2_minimum_hydrogen_mwh",
+        ]
+
+        missing = [
+            key for key in required
+            if key not in meta
+        ]
+
+        if missing:
+            raise RuntimeError(
+                "HMAX metadata missing from solved network: "
+                f"{missing}"
+            )
+
+        hmax_stage1_hydrogen_mwh = float(
+            meta["hmax_stage1_hydrogen_mwh"]
+        )
+
+        hmax_relative_tolerance = float(
+            meta["hmax_relative_tolerance"]
+        )
+
+        hmax_absolute_tolerance_mwh = float(
+            meta["hmax_absolute_tolerance_mwh"]
+        )
+
+        hmax_tolerance_mwh = float(
+            meta["hmax_tolerance_mwh"]
+        )
+
+        hmax_stage2_minimum_hydrogen_mwh = float(
+            meta["hmax_stage2_minimum_hydrogen_mwh"]
+        )
+
+        hmax_stage1_hydrogen_kt = (
+            hmax_stage1_hydrogen_mwh
+            * 1000.0
+            / float(
+                cfg["hydrogen"][
+                    "hydrogen_lhv_kwh_per_kg"
+                ]
+            )
+            / 1_000_000.0
+        )
+
+        hmax_gap_to_stage1_mwh = (
+            hmax_stage1_hydrogen_mwh
+            - hydrogen_delivery
+        )
+
+        hmax_stage2_retained_fraction = (
+            hydrogen_delivery
+            / hmax_stage1_hydrogen_mwh
+        )
+
     return {
         "scenario_name": cfg["scenario_name"],
+        "hydrogen_mode": hydrogen_mode,
         "solar_capacity_mw": solar_capacity,
         "wind_capacity_mw": wind_capacity,
         "electrolyzer_capacity_mw": electrolyzer_capacity,
@@ -308,6 +403,18 @@ def summarize(n, cfg):
         "hydrogen_delivered_mwh": hydrogen_delivery,
         "hydrogen_delivered_kt": delivered_kg / 1_000_000.0,
         "h2_target_annual_kt": target_kt,
+        "hmax_stage1_hydrogen_mwh": hmax_stage1_hydrogen_mwh,
+        "hmax_stage1_hydrogen_kt": hmax_stage1_hydrogen_kt,
+        "hmax_relative_tolerance": hmax_relative_tolerance,
+        "hmax_absolute_tolerance_mwh": hmax_absolute_tolerance_mwh,
+        "hmax_tolerance_mwh": hmax_tolerance_mwh,
+        "hmax_stage2_minimum_hydrogen_mwh": (
+            hmax_stage2_minimum_hydrogen_mwh
+        ),
+        "hmax_gap_to_stage1_mwh": hmax_gap_to_stage1_mwh,
+        "hmax_stage2_retained_fraction": (
+            hmax_stage2_retained_fraction
+        ),
         "solar_curtailment_mwh": (
             solar_available
             - solar_generation
