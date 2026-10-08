@@ -116,6 +116,12 @@ print(
     f" {summary['battery_energy_mwh']:.6f} MWh"
 )
 
+if summary["battery_power_mw"] > 1e-9:
+    print(
+        f"Battery duration: "
+        f"{summary['battery_duration_h']:.6f} h"
+    )
+
 if summary["bitcoin_capacity_mw"] > 1e-9:
     print(
         f"BTC capacity: "

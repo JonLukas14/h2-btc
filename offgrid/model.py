@@ -545,16 +545,66 @@ def build_network(cfg):
             )
         ).strip().lower()
 
-        if capacity_mode != "fixed":
-            raise NotImplementedError(
-                "The clean model currently supports only fixed "
-                "Bitcoin capacity. Endogenous capacity will be "
-                "added after S2/S3 regression validation."
+        if capacity_mode == "fixed":
+            bitcoin_capacity_mw = float(
+                bitcoin_cfg["max_capacity_mw"]
             )
 
-        bitcoin_capacity_mw = float(
-            bitcoin_cfg["max_capacity_mw"]
-        )
+            if bitcoin_capacity_mw <= 0.0:
+                raise ValueError(
+                    "bitcoin.max_capacity_mw must be greater than zero "
+                    "for fixed BTC capacity."
+                )
+
+            bitcoin_capacity_kwargs = {
+                "p_nom": bitcoin_capacity_mw,
+                "p_nom_extendable": False,
+                "capital_cost": 0.0,
+            }
+
+        elif capacity_mode == "endogenous":
+            annualized_capacity_cost = float(
+                bitcoin_cfg[
+                    "annualized_capacity_cost_eur_per_mw_year"
+                ]
+            )
+
+            if annualized_capacity_cost < 0.0:
+                raise ValueError(
+                    "Bitcoin annualized capacity cost "
+                    "must be non-negative."
+                )
+
+            bitcoin_capacity_kwargs = {
+                "p_nom": 0.0,
+                "p_nom_extendable": True,
+                "capital_cost": annualized_capacity_cost,
+            }
+
+            max_capacity_mw = bitcoin_cfg.get(
+                "max_capacity_mw"
+            )
+
+            if max_capacity_mw is not None:
+                max_capacity_mw = float(
+                    max_capacity_mw
+                )
+
+                if max_capacity_mw <= 0.0:
+                    raise ValueError(
+                        "bitcoin.max_capacity_mw must be greater than "
+                        "zero when an endogenous ceiling is used."
+                    )
+
+                bitcoin_capacity_kwargs[
+                    "p_nom_max"
+                ] = max_capacity_mw
+
+        else:
+            raise ValueError(
+                "bitcoin.capacity_mode must be either "
+                "'fixed' or 'endogenous'."
+            )
 
         hashprice_eur_per_th_day = float(
             bitcoin_cfg[
@@ -581,11 +631,6 @@ def build_network(cfg):
                 0.0,
             )
         )
-
-        if bitcoin_capacity_mw <= 0.0:
-            raise ValueError(
-                "bitcoin.max_capacity_mw must be greater than zero."
-            )
 
         if hashprice_eur_per_th_day < 0.0:
             raise ValueError(
@@ -651,12 +696,10 @@ def build_network(cfg):
             bus="electricity_bus",
             carrier="bitcoin_mining",
             sign=-1.0,
-            p_nom=bitcoin_capacity_mw,
-            p_nom_extendable=False,
             p_min_pu=0.0,
             p_max_pu=1.0,
-            capital_cost=0.0,
             marginal_cost=-bitcoin_net_value_eur_per_mwh,
+            **bitcoin_capacity_kwargs,
         )
 
     electrolyzer_efficiency = float(

@@ -148,16 +148,35 @@ def summarize(n, cfg):
     bitcoin_gross_revenue_eur_per_year = 0.0
     bitcoin_other_opex_eur_per_year = 0.0
     bitcoin_net_operating_value_eur_per_year = 0.0
+    bitcoin_capacity_cost_eur_per_year = 0.0
 
     if "bitcoin_mining_sink" in n.generators.index:
         bitcoin_cfg = cfg["bitcoin"]
 
-        bitcoin_capacity_mw = float(
+        bitcoin_extendable = bool(
             n.generators.at[
                 "bitcoin_mining_sink",
-                "p_nom",
+                "p_nom_extendable",
             ]
         )
+
+        if bitcoin_extendable:
+            bitcoin_capacity_mw = float(
+                n.generators.at[
+                    "bitcoin_mining_sink",
+                    "p_nom_opt",
+                ]
+            )
+        else:
+            bitcoin_capacity_mw = float(
+                n.generators.at[
+                    "bitcoin_mining_sink",
+                    "p_nom",
+                ]
+            )
+
+        if abs(bitcoin_capacity_mw) < 1e-9:
+            bitcoin_capacity_mw = 0.0
 
         bitcoin_consumption_mwh = float(
             (
@@ -243,6 +262,16 @@ def summarize(n, cfg):
             - bitcoin_other_opex_eur_per_year
         )
 
+        bitcoin_capacity_cost_eur_per_year = (
+            bitcoin_capacity_mw
+            * float(
+                n.generators.at[
+                    "bitcoin_mining_sink",
+                    "capital_cost",
+                ]
+            )
+        )
+
     # PyPSA objective already includes BTC operating value
     # through its negative marginal cost.
     net_system_cost_eur_per_year = objective
@@ -270,6 +299,7 @@ def summarize(n, cfg):
         "bitcoin_gross_revenue_eur_per_year": bitcoin_gross_revenue_eur_per_year,
         "bitcoin_other_opex_eur_per_year": bitcoin_other_opex_eur_per_year,
         "bitcoin_net_operating_value_eur_per_year": bitcoin_net_operating_value_eur_per_year,
+        "bitcoin_capacity_cost_eur_per_year": bitcoin_capacity_cost_eur_per_year,
         "solar_generation_mwh": solar_generation,
         "wind_generation_mwh": wind_generation,
         "renewable_generation_mwh": total_generation,
