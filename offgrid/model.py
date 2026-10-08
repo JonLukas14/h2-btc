@@ -245,10 +245,10 @@ def build_network(cfg):
         battery_cfg.get("enabled", False)
     )
 
-    if cfg.get("bitcoin", {}).get("enabled", False):
-        raise NotImplementedError(
-            "Bitcoin is intentionally disabled until S0 regression passes."
-        )
+    bitcoin_cfg = cfg.get("bitcoin", {})
+    bitcoin_enabled = bool(
+        bitcoin_cfg.get("enabled", False)
+    )
 
     if cfg.get("hydrogen_storage", {}).get("enabled", False):
         raise NotImplementedError(
@@ -311,6 +311,9 @@ def build_network(cfg):
 
     if battery_enabled:
         carriers.append("battery")
+
+    if bitcoin_enabled:
+        carriers.append("bitcoin_mining")
 
     n.add(
         "Carrier",
@@ -517,6 +520,143 @@ def build_network(cfg):
             efficiency=battery_discharge_efficiency,
             capital_cost=0.0,
             marginal_cost=0.0,
+        )
+
+    if bitcoin_enabled:
+        operating_mode = str(
+            bitcoin_cfg.get(
+                "operating_mode",
+                "economic_dispatch",
+            )
+        ).strip().lower()
+
+        if operating_mode != "economic_dispatch":
+            raise ValueError(
+                "Bitcoin requires "
+                "operating_mode='economic_dispatch'."
+            )
+
+        # Thesis default:
+        # omitted capacity_mode means fixed installed capacity.
+        capacity_mode = str(
+            bitcoin_cfg.get(
+                "capacity_mode",
+                "fixed",
+            )
+        ).strip().lower()
+
+        if capacity_mode != "fixed":
+            raise NotImplementedError(
+                "The clean model currently supports only fixed "
+                "Bitcoin capacity. Endogenous capacity will be "
+                "added after S2/S3 regression validation."
+            )
+
+        bitcoin_capacity_mw = float(
+            bitcoin_cfg["max_capacity_mw"]
+        )
+
+        hashprice_eur_per_th_day = float(
+            bitcoin_cfg[
+                "hashprice_eur_per_th_day"
+            ]
+        )
+
+        asic_efficiency_j_per_th = float(
+            bitcoin_cfg[
+                "asic_efficiency_j_per_th"
+            ]
+        )
+
+        pue = float(
+            bitcoin_cfg.get(
+                "pue",
+                1.0,
+            )
+        )
+
+        other_opex_eur_per_mwh = float(
+            bitcoin_cfg.get(
+                "other_opex_eur_per_mwh",
+                0.0,
+            )
+        )
+
+        if bitcoin_capacity_mw <= 0.0:
+            raise ValueError(
+                "bitcoin.max_capacity_mw must be greater than zero."
+            )
+
+        if hashprice_eur_per_th_day < 0.0:
+            raise ValueError(
+                "bitcoin.hashprice_eur_per_th_day must be non-negative."
+            )
+
+        if asic_efficiency_j_per_th <= 0.0:
+            raise ValueError(
+                "bitcoin.asic_efficiency_j_per_th "
+                "must be greater than zero."
+            )
+
+        if pue < 1.0:
+            raise ValueError(
+                "bitcoin.pue must be at least 1.0."
+            )
+
+        if other_opex_eur_per_mwh < 0.0:
+            raise ValueError(
+                "bitcoin.other_opex_eur_per_mwh "
+                "must be non-negative."
+            )
+
+        # Facility-side electrical intensity.
+        #
+        # ASIC efficiency:
+        #   J/TH = W/(TH/s)
+        #
+        # PUE expands miner-wall electricity to the
+        # complete facility electricity boundary.
+        mw_per_th_per_s = (
+            asic_efficiency_j_per_th
+            * pue
+            / 1e6
+        )
+
+        # Hashprice is EUR/(TH/s)/day.
+        # 1 MWh = 1 MW operated for 1/24 day.
+        th_day_per_mwh = (
+            (1.0 / 24.0)
+            / mw_per_th_per_s
+        )
+
+        bitcoin_gross_revenue_eur_per_mwh = (
+            hashprice_eur_per_th_day
+            * th_day_per_mwh
+        )
+
+        bitcoin_net_value_eur_per_mwh = (
+            bitcoin_gross_revenue_eur_per_mwh
+            - other_opex_eur_per_mwh
+        )
+
+        # Flexible electricity consumer.
+        #
+        # sign=-1 means positive Generator dispatch
+        # withdraws electricity from electricity_bus.
+        # Negative marginal cost represents BTC
+        # operating value in the optimization objective.
+        n.add(
+            "Generator",
+            "bitcoin_mining_sink",
+            bus="electricity_bus",
+            carrier="bitcoin_mining",
+            sign=-1.0,
+            p_nom=bitcoin_capacity_mw,
+            p_nom_extendable=False,
+            p_min_pu=0.0,
+            p_max_pu=1.0,
+            capital_cost=0.0,
+            marginal_cost=-bitcoin_net_value_eur_per_mwh,
         )
 
     electrolyzer_efficiency = float(

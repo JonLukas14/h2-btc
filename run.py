@@ -116,14 +116,45 @@ print(
     f" {summary['battery_energy_mwh']:.6f} MWh"
 )
 
+if summary["bitcoin_capacity_mw"] > 1e-9:
+    print(
+        f"BTC capacity: "
+        f"{summary['bitcoin_capacity_mw']:.6f} MW"
+    )
+
+    print(
+        f"BTC electricity: "
+        f"{summary['bitcoin_consumption_mwh'] / 1000.0:.6f} GWh/a"
+    )
+
+    print(
+        f"BTC utilization: "
+        f"{100.0 * summary['bitcoin_utilization_rate']:.6f}%"
+    )
+
+    print(
+        f"BTC value:     "
+        f"{summary['bitcoin_gross_revenue_eur_per_mwh']:.6f} EUR/MWh"
+    )
+
+    print(
+        f"BTC revenue:   "
+        f"{summary['bitcoin_gross_revenue_eur_per_year']:,.2f} EUR/a"
+    )
+
 print(
-    f"System cost:  "
-    f"{summary['objective_eur_per_year']:,.2f} EUR/a"
+    f"Gross cost:    "
+    f"{summary['gross_system_expenditure_eur_per_year']:,.2f} EUR/a"
 )
 
 print(
-    f"LCOH:         "
-    f"{summary['lcoh_eur_per_kg_h2']:.6f} EUR/kg"
+    f"Net cost:      "
+    f"{summary['net_system_cost_eur_per_year']:,.2f} EUR/a"
+)
+
+print(
+    f"Net cost/H2:   "
+    f"{summary['net_system_cost_eur_per_kg_h2']:.6f} EUR/kg"
 )
 
 print(

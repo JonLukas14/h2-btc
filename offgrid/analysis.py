@@ -136,6 +136,124 @@ def summarize(n, cfg):
                 / battery_power_mw
             )
 
+    # --------------------------------------------------------
+    # Bitcoin mining
+    # --------------------------------------------------------
+    bitcoin_capacity_mw = 0.0
+    bitcoin_consumption_mwh = 0.0
+    bitcoin_utilization_rate = 0.0
+    bitcoin_full_load_hours = 0.0
+
+    bitcoin_gross_revenue_eur_per_mwh = 0.0
+    bitcoin_gross_revenue_eur_per_year = 0.0
+    bitcoin_other_opex_eur_per_year = 0.0
+    bitcoin_net_operating_value_eur_per_year = 0.0
+
+    if "bitcoin_mining_sink" in n.generators.index:
+        bitcoin_cfg = cfg["bitcoin"]
+
+        bitcoin_capacity_mw = float(
+            n.generators.at[
+                "bitcoin_mining_sink",
+                "p_nom",
+            ]
+        )
+
+        bitcoin_consumption_mwh = float(
+            (
+                n.generators_t.p[
+                    "bitcoin_mining_sink"
+                ]
+                * weights
+            ).sum()
+        )
+
+        weighted_hours = float(
+            weights.sum()
+        )
+
+        if bitcoin_capacity_mw > 1e-9:
+            bitcoin_utilization_rate = (
+                bitcoin_consumption_mwh
+                / (
+                    bitcoin_capacity_mw
+                    * weighted_hours
+                )
+            )
+
+            bitcoin_full_load_hours = (
+                bitcoin_consumption_mwh
+                / bitcoin_capacity_mw
+            )
+
+        hashprice = float(
+            bitcoin_cfg[
+                "hashprice_eur_per_th_day"
+            ]
+        )
+
+        asic_efficiency = float(
+            bitcoin_cfg[
+                "asic_efficiency_j_per_th"
+            ]
+        )
+
+        pue = float(
+            bitcoin_cfg.get(
+                "pue",
+                1.0,
+            )
+        )
+
+        other_opex = float(
+            bitcoin_cfg.get(
+                "other_opex_eur_per_mwh",
+                0.0,
+            )
+        )
+
+        mw_per_th_per_s = (
+            asic_efficiency
+            * pue
+            / 1e6
+        )
+
+        th_day_per_mwh = (
+            (1.0 / 24.0)
+            / mw_per_th_per_s
+        )
+
+        bitcoin_gross_revenue_eur_per_mwh = (
+            hashprice
+            * th_day_per_mwh
+        )
+
+        bitcoin_gross_revenue_eur_per_year = (
+            bitcoin_consumption_mwh
+            * bitcoin_gross_revenue_eur_per_mwh
+        )
+
+        bitcoin_other_opex_eur_per_year = (
+            bitcoin_consumption_mwh
+            * other_opex
+        )
+
+        bitcoin_net_operating_value_eur_per_year = (
+            bitcoin_gross_revenue_eur_per_year
+            - bitcoin_other_opex_eur_per_year
+        )
+
+    # PyPSA objective already includes BTC operating value
+    # through its negative marginal cost.
+    net_system_cost_eur_per_year = objective
+
+    # Add BTC operating value back to recover the
+    # underlying gross system expenditure.
+    gross_system_expenditure_eur_per_year = (
+        net_system_cost_eur_per_year
+        + bitcoin_net_operating_value_eur_per_year
+    )
+
     return {
         "scenario_name": cfg["scenario_name"],
         "solar_capacity_mw": solar_capacity,
@@ -144,6 +262,14 @@ def summarize(n, cfg):
         "battery_power_mw": battery_power_mw,
         "battery_energy_mwh": battery_energy_mwh,
         "battery_duration_h": battery_duration_h,
+        "bitcoin_capacity_mw": bitcoin_capacity_mw,
+        "bitcoin_consumption_mwh": bitcoin_consumption_mwh,
+        "bitcoin_utilization_rate": bitcoin_utilization_rate,
+        "bitcoin_full_load_hours": bitcoin_full_load_hours,
+        "bitcoin_gross_revenue_eur_per_mwh": bitcoin_gross_revenue_eur_per_mwh,
+        "bitcoin_gross_revenue_eur_per_year": bitcoin_gross_revenue_eur_per_year,
+        "bitcoin_other_opex_eur_per_year": bitcoin_other_opex_eur_per_year,
+        "bitcoin_net_operating_value_eur_per_year": bitcoin_net_operating_value_eur_per_year,
         "solar_generation_mwh": solar_generation,
         "wind_generation_mwh": wind_generation,
         "renewable_generation_mwh": total_generation,
@@ -165,6 +291,16 @@ def summarize(n, cfg):
             / total_available
         ),
         "objective_eur_per_year": objective,
+        "gross_system_expenditure_eur_per_year": (
+            gross_system_expenditure_eur_per_year
+        ),
+        "net_system_cost_eur_per_year": (
+            net_system_cost_eur_per_year
+        ),
+        "net_system_cost_eur_per_kg_h2": (
+            net_system_cost_eur_per_year
+            / delivered_kg
+        ),
         "lcoh_eur_per_kg_h2": (
             objective
             / delivered_kg
