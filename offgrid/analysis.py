@@ -106,15 +106,39 @@ def summarize(n, cfg):
         else None
     )
 
+    hydrogen_lhv_kwh_per_kg = float(
+        cfg["hydrogen"][
+            "hydrogen_lhv_kwh_per_kg"
+        ]
+    )
+
     delivered_kg = (
         hydrogen_delivery
         * 1000.0
-        / float(
+        / hydrogen_lhv_kwh_per_kg
+    )
+
+    hydrogen_sale_value_eur_per_kg_h2 = 0.0
+    hydrogen_sale_value_eur_per_mwh_h2 = 0.0
+    hydrogen_sales_revenue_eur_per_year = 0.0
+
+    if hydrogen_mode == "economic_dispatch":
+        hydrogen_sale_value_eur_per_kg_h2 = float(
             cfg["hydrogen"][
-                "hydrogen_lhv_kwh_per_kg"
+                "sale_value_eur_per_kg_h2"
             ]
         )
-    )
+
+        hydrogen_sale_value_eur_per_mwh_h2 = (
+            hydrogen_sale_value_eur_per_kg_h2
+            * 1000.0
+            / hydrogen_lhv_kwh_per_kg
+        )
+
+        hydrogen_sales_revenue_eur_per_year = (
+            hydrogen_delivery
+            * hydrogen_sale_value_eur_per_mwh_h2
+        )
 
     objective = float(n.objective)
 
@@ -298,6 +322,7 @@ def summarize(n, cfg):
     gross_system_expenditure_eur_per_year = (
         net_system_cost_eur_per_year
         + bitcoin_net_operating_value_eur_per_year
+        + hydrogen_sales_revenue_eur_per_year
     )
 
     # --------------------------------------------------------
@@ -377,6 +402,28 @@ def summarize(n, cfg):
             / hmax_stage1_hydrogen_mwh
         )
 
+    if delivered_kg > 1e-9:
+        net_system_cost_eur_per_kg_h2 = (
+            net_system_cost_eur_per_year
+            / delivered_kg
+        )
+
+        lcoh_eur_per_kg_h2 = (
+            objective
+            / delivered_kg
+        )
+    else:
+        net_system_cost_eur_per_kg_h2 = float("nan")
+        lcoh_eur_per_kg_h2 = float("nan")
+
+    if total_available > 1e-9:
+        renewable_utilization_rate = (
+            total_generation
+            / total_available
+        )
+    else:
+        renewable_utilization_rate = float("nan")
+
     return {
         "scenario_name": cfg["scenario_name"],
         "hydrogen_mode": hydrogen_mode,
@@ -403,6 +450,15 @@ def summarize(n, cfg):
         "hydrogen_delivered_mwh": hydrogen_delivery,
         "hydrogen_delivered_kt": delivered_kg / 1_000_000.0,
         "h2_target_annual_kt": target_kt,
+        "hydrogen_sale_value_eur_per_kg_h2": (
+            hydrogen_sale_value_eur_per_kg_h2
+        ),
+        "hydrogen_sale_value_eur_per_mwh_h2": (
+            hydrogen_sale_value_eur_per_mwh_h2
+        ),
+        "hydrogen_sales_revenue_eur_per_year": (
+            hydrogen_sales_revenue_eur_per_year
+        ),
         "hmax_stage1_hydrogen_mwh": hmax_stage1_hydrogen_mwh,
         "hmax_stage1_hydrogen_kt": hmax_stage1_hydrogen_kt,
         "hmax_relative_tolerance": hmax_relative_tolerance,
@@ -424,8 +480,7 @@ def summarize(n, cfg):
             - wind_generation
         ),
         "renewable_utilization_rate": (
-            total_generation
-            / total_available
+            renewable_utilization_rate
         ),
         "objective_eur_per_year": objective,
         "gross_system_expenditure_eur_per_year": (
@@ -435,12 +490,10 @@ def summarize(n, cfg):
             net_system_cost_eur_per_year
         ),
         "net_system_cost_eur_per_kg_h2": (
-            net_system_cost_eur_per_year
-            / delivered_kg
+            net_system_cost_eur_per_kg_h2
         ),
         "lcoh_eur_per_kg_h2": (
-            objective
-            / delivered_kg
+            lcoh_eur_per_kg_h2
         ),
     }
 

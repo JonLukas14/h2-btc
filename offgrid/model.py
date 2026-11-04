@@ -244,11 +244,13 @@ def build_network(cfg):
     if hydrogen_mode not in {
         "production_target",
         "maximize_production",
+        "economic_dispatch",
     }:
         raise ValueError(
-            "Clean off-grid model currently supports "
-            "hydrogen.mode='production_target' or "
-            "'maximize_production'."
+            "Clean off-grid model supports "
+            "hydrogen.mode='production_target', "
+            "'maximize_production', or "
+            "'economic_dispatch'."
         )
 
     battery_cfg = cfg.get("battery", {})
@@ -751,6 +753,53 @@ def build_network(cfg):
         marginal_cost=electrolyzer_vom,
     )
 
+    hydrogen_sale_value_eur_per_kg_h2 = 0.0
+    hydrogen_sale_value_eur_per_mwh_h2 = 0.0
+
+    if hydrogen_mode == "economic_dispatch":
+        configured_sale_value = hydrogen.get(
+            "sale_value_eur_per_kg_h2"
+        )
+
+        if configured_sale_value is None:
+            raise ValueError(
+                "hydrogen.sale_value_eur_per_kg_h2 must be "
+                "defined for hydrogen.mode='economic_dispatch'."
+            )
+
+        hydrogen_sale_value_eur_per_kg_h2 = float(
+            configured_sale_value
+        )
+
+        if (
+            not math.isfinite(
+                hydrogen_sale_value_eur_per_kg_h2
+            )
+            or hydrogen_sale_value_eur_per_kg_h2 < 0.0
+        ):
+            raise ValueError(
+                "hydrogen.sale_value_eur_per_kg_h2 must be "
+                "finite and non-negative."
+            )
+
+        hydrogen_lhv_kwh_per_kg = float(
+            hydrogen[
+                "hydrogen_lhv_kwh_per_kg"
+            ]
+        )
+
+        if hydrogen_lhv_kwh_per_kg <= 0.0:
+            raise ValueError(
+                "hydrogen.hydrogen_lhv_kwh_per_kg must be "
+                "greater than zero."
+            )
+
+        hydrogen_sale_value_eur_per_mwh_h2 = (
+            hydrogen_sale_value_eur_per_kg_h2
+            * 1000.0
+            / hydrogen_lhv_kwh_per_kg
+        )
+
     if hydrogen_mode == "production_target":
         # Preserve the already validated S0-S3E formulation.
         target_mwh = hydrogen_target_mwh(cfg)
@@ -762,10 +811,17 @@ def build_network(cfg):
 
     elif hydrogen_mode == "maximize_production":
         # HMAX has no prescribed annual H2 quantity.
-        #
-        # Hydrogen delivery is therefore an extendable zero-cost
-        # product sink. The Stage-1 objective will maximize its
-        # annual dispatch subject to the physical system limits.
+        hydrogen_delivery_kwargs = {
+            "p_nom": 0.0,
+            "p_nom_extendable": True,
+            "p_nom_min": 0.0,
+            "capital_cost": 0.0,
+        }
+
+    elif hydrogen_mode == "economic_dispatch":
+        # Merchant H2 has no prescribed annual quantity.
+        # Physical production capacity remains represented
+        # by the electrolyzer Link.
         hydrogen_delivery_kwargs = {
             "p_nom": 0.0,
             "p_nom_extendable": True,
@@ -786,7 +842,11 @@ def build_network(cfg):
         sign=-1.0,
         p_min_pu=0.0,
         p_max_pu=1.0,
-        marginal_cost=0.0,
+        marginal_cost=(
+            -hydrogen_sale_value_eur_per_mwh_h2
+            if hydrogen_mode == "economic_dispatch"
+            else 0.0
+        ),
         **hydrogen_delivery_kwargs,
     )
 
@@ -1132,6 +1192,31 @@ def solve_network(n, cfg):
             "hmax_stage2_minimum_hydrogen_mwh"
         ] = float(
             stage2_minimum_hydrogen_mwh
+        )
+
+    elif hydrogen_mode == "economic_dispatch":
+
+        def extra_functionality(
+            network,
+            snapshots,
+        ):
+            # Merchant H2 has no annual production target.
+            # PyPSA retains its normal objective:
+            #
+            # system costs
+            # - H2 sales revenue
+            # - BTC operating revenue
+            #
+            # Only the battery inverter coupling is added.
+            add_battery_power_coupling_constraint(
+                network,
+                cfg,
+            )
+
+        status, condition = n.optimize(
+            solver_name="highs",
+            extra_functionality=extra_functionality,
+            include_objective_constant=False,
         )
 
     else:
